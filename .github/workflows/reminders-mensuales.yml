@@ -2,9 +2,10 @@ name: Recordatorios mensuales (sueldo + comisiones)
 
 on:
   schedule:
-    # Corre 9:25 AR (12:25 UTC); la entrega exacta a las 10:00 AR la hace
-    # ntfy con el header "At:" porque GitHub Actions no es puntual.
-    - cron: "25 12 * * *"
+    # Día 1 (sueldo) y día 10 (comisiones), entregados 18:00 AR en punto.
+    # Corre ~35 min antes (17:25 AR = 20:25 UTC) porque GitHub Actions no es
+    # puntual; la entrega exacta la hace ntfy con el header "At:".
+    - cron: "25 20 1,10 * *"
   workflow_dispatch:
 
 permissions:
@@ -14,23 +15,23 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Chequear sueldo y comisión del mes, notificar si faltan
+      - name: Recordar sueldo (día 1) o comisiones (día 10) si faltan
         env:
           TOPIC: ${{ secrets.NTFY_TOPIC }}
           APP_URL: https://thomasloekemeyer.github.io/sueldo-tracker/
           SB_URL: https://ljwlanwmnuqgxftlirhh.supabase.co
           SB_KEY: sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0
         run: |
-          DIA=$(TZ=America/Argentina/Buenos_Aires date +%d)
+          DIA=$(TZ=America/Argentina/Buenos_Aires date +%-d)
           MES_LBL=$(TZ=America/Argentina/Buenos_Aires date +%m/%Y)
           START=$(TZ=America/Argentina/Buenos_Aires date +%Y-%m-01)
           END=$(TZ=America/Argentina/Buenos_Aires date -d "$START + 1 month" +%Y-%m-01)
           TODAY=$(TZ=America/Argentina/Buenos_Aires date +%Y-%m-%d)
 
-          # Entrega exacta 10:00 AR; si el run se atrasó hasta pasada esa
+          # Entrega exacta 18:00 AR; si el run se atrasó hasta pasada esa
           # hora, entregar de inmediato (ntfy rechaza "At" en el pasado).
           NOW=$(date +%s)
-          TARGET=$(date -d "${TODAY}T10:00:00-03:00" +%s)
+          TARGET=$(date -d "${TODAY}T18:00:00-03:00" +%s)
           DELAY_HEADER=()
           if [ $(( TARGET - NOW )) -gt 60 ]; then
             DELAY_HEADER=(-H "At: ${TARGET}")
@@ -39,8 +40,6 @@ jobs:
           echo "AR día ${DIA}, mes ${MES_LBL}, rango [${START}, ${END})"
 
           # Cuenta ingresos del mes con descripción que contenga keyword.
-          # Si Supabase no responde, cortar con error visible (el workflow
-          # diario ya manda la alerta de "recordatorios rotos").
           has_ingreso() {
             local keyword="$1"
             curl -fsS \
@@ -62,20 +61,18 @@ jobs:
               -d "${body}"
           }
 
-          # Sueldo: reclamar desde el día 1 hasta que se registre
-          SUELDO_COUNT=$(has_ingreso "sueldo") || { echo "::error::Supabase no responde (${SB_URL})"; exit 1; }
-          if [ "$SUELDO_COUNT" -eq 0 ]; then
-            echo "Sueldo ${MES_LBL} pendiente, envío notificación."
-            send_ntfy "Sueldo ${MES_LBL}" \
-              "Registrar sueldo del mes (2.750.000)" \
-              "Confirmar 2.750.000" \
-              "${APP_URL}?action=sueldo"
-          else
-            echo "Sueldo ${MES_LBL} ya registrado (${SUELDO_COUNT}), skip."
-          fi
-
-          # Comisión: reclamar desde el día 15 hasta que se registre
-          if [ "$DIA" -ge 15 ]; then
+          if [ "$DIA" -eq 1 ]; then
+            SUELDO_COUNT=$(has_ingreso "sueldo") || { echo "::error::Supabase no responde (${SB_URL})"; exit 1; }
+            if [ "$SUELDO_COUNT" -eq 0 ]; then
+              echo "Sueldo ${MES_LBL} pendiente, envío notificación."
+              send_ntfy "Sueldo ${MES_LBL}" \
+                "Registrar sueldo del mes (2.750.000)" \
+                "Confirmar 2.750.000" \
+                "${APP_URL}?action=sueldo"
+            else
+              echo "Sueldo ${MES_LBL} ya registrado (${SUELDO_COUNT}), skip."
+            fi
+          elif [ "$DIA" -eq 10 ]; then
             COM_COUNT=$(has_ingreso "comision") || { echo "::error::Supabase no responde (${SB_URL})"; exit 1; }
             if [ "$COM_COUNT" -eq 0 ]; then
               echo "Comisión ${MES_LBL} pendiente, envío notificación."
@@ -86,4 +83,6 @@ jobs:
             else
               echo "Comisión ${MES_LBL} ya registrada (${COM_COUNT}), skip."
             fi
+          else
+            echo "Día ${DIA}: no corresponde recordatorio mensual."
           fi

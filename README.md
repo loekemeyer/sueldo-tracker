@@ -29,7 +29,7 @@ PWA personal para trackear sueldo. Se instala en el iPhone como una app, se desb
 
 ## Notificación diaria vía ntfy.sh
 
-Los días hábiles, desde las 18:00 (AR) y reintentando cada hora en punto hasta las 23:00, te llega un push real al iPhone preguntando si trabajaste 9 a 18hs, con botones para confirmar o editar.
+Los días hábiles a las 18:00 (AR) te llega un push real al iPhone preguntando si trabajaste 9 a 18hs, con botones para confirmar o editar. Además, el día 1 de cada mes recuerda cargar el sueldo y el día 10 las comisiones (también 18:00 AR).
 
 ### Setup (una vez)
 
