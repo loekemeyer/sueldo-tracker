@@ -29,7 +29,7 @@ PWA personal para trackear sueldo. Se instala en el iPhone como una app, se desb
 
 ## Notificación diaria vía ntfy.sh
 
-Todos los días a las 20:30 (AR) te llega un push real al iPhone preguntando si trabajaste 9 a 18hs, con botones para confirmar o editar.
+Los días hábiles, desde las 18:00 (AR) y reintentando cada hora en punto hasta las 23:00, te llega un push real al iPhone preguntando si trabajaste 9 a 18hs, con botones para confirmar o editar.
 
 ### Setup (una vez)
 
@@ -38,20 +38,20 @@ Todos los días a las 20:30 (AR) te llega un push real al iPhone preguntando si 
 3. Desactivá "Use another server" (dejá el default `ntfy.sh`).
 4. En "Topic" pegá: `sueldo-thomas-70e02ec5b389`
 5. Activá las notificaciones cuando te las pida iOS.
-6. Listo. De ahí en más a las 20:30 te llega la notificación como push nativo.
+6. Listo. De ahí en más te llega la notificación como push nativo.
 
 ### Cómo funciona
 
-- El workflow `.github/workflows/ntfy-daily.yml` corre todos los días a las 23:30 UTC (= 20:30 AR).
+- El workflow `.github/workflows/ntfy-daily.yml` corre ~35 min antes de cada hora objetivo (los crons de GitHub Actions se retrasan hasta una hora) y programa la entrega exacta en la hora en punto con el header `At:` de ntfy.
 - Manda un POST a `ntfy.sh/<topic>` con el mensaje y dos action buttons.
+- Si Supabase no responde, manda una alerta "Recordatorios rotos" (una vez por día) en vez de fallar en silencio.
+- El workflow `.github/workflows/keepalive.yml` hace un commit vacío cada ~1 mes sin actividad, porque GitHub desactiva los crons de repos públicos tras 60 días sin commits.
 - Tocás **"Sí, 9hs"** → abre la PWA con `?action=confirm9to18` → se registra la jornada y se actualiza el saldo.
 - Tocás **"Editar"** → abre la PWA con `?action=editar` → te pide la cantidad de horas manualmente.
 
 ### Cambiar el horario
 
-Editá el `cron` en `.github/workflows/ntfy-daily.yml`:
-- `30 23 * * *` = 20:30 AR (UTC-3)
-- Si querés 18:00 AR, usá `0 21 * * *`
+Editá el `cron` en `.github/workflows/ntfy-daily.yml` (AR = UTC-3). Poné el cron ~35 min antes de la hora en punto que querés; la entrega exacta la resuelve el header `At:`.
 - Para pruebas rápidas también podés disparar el workflow a mano desde la pestaña **Actions** del repo.
 
 

@@ -2,8 +2,9 @@ name: Actualizar precios CEDEARs
 
 on:
   schedule:
-    # Lunes-Viernes 20:00 AR = 23:00 UTC (después de cierre NYSE)
-    - cron: "0 23 * * 1-5"
+    # Lunes-Viernes ~20:15 AR = 23:15 UTC (después de cierre NYSE).
+    # Minuto 15 y no 0: GitHub Actions retrasa mucho los crons del minuto 0.
+    - cron: "15 23 * * 1-5"
   workflow_dispatch:
 
 permissions:

@@ -2,9 +2,10 @@ name: Control diario (ntfy)
 
 on:
   schedule:
-    # 18, 19, 20, 21, 22, 23 hs AR = 21, 22, 23, 0, 1, 2 UTC (AR es UTC-3)
-    # Reintenta cada hora hasta confirmación o hasta 23hs.
-    - cron: "0 21,22,23,0,1,2 * * *"
+    # Corre ~35 min ANTES de cada hora objetivo (18-23 AR = 21-2 UTC) porque
+    # GitHub Actions no es puntual (retrasos de 15-50 min, peor en minuto 0).
+    # La entrega exacta la hace ntfy con el header "At:" (delayed delivery).
+    - cron: "25 20,21,22,23,0,1 * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,13 +30,36 @@ jobs:
           fi
 
           TODAY=$(TZ=America/Argentina/Buenos_Aires date +%Y-%m-%d)
+          NOW=$(date +%s)
+          HOUR_AR=$(TZ=America/Argentina/Buenos_Aires date +%-H)
 
-          # Última jornada registrada
-          LAST=$(curl -fsS \
+          # Hora objetivo: la próxima hora en punto (AR está en UTC-3 fijo,
+          # así que la hora en punto UTC coincide con la hora en punto AR).
+          TARGET=$(( (NOW / 3600 + 1) * 3600 ))
+          # Si el run se atrasó tanto que el objetivo quedó muy cerca/pasado,
+          # entregar de inmediato (ntfy rechaza "At" en el pasado).
+          DELAY_HEADER=()
+          if [ $(( TARGET - NOW )) -gt 60 ]; then
+            DELAY_HEADER=(-H "At: ${TARGET}")
+          fi
+
+          # Última jornada registrada. Si Supabase no responde, avisar (una
+          # sola vez por día, en el primer slot) en vez de fallar en silencio.
+          if ! RAW=$(curl -fsS \
             -H "apikey: ${SB_KEY}" \
             -H "Authorization: Bearer ${SB_KEY}" \
-            "${SB_URL}/rest/v1/movimientos?select=fecha&tipo=eq.horas&order=fecha.desc&limit=1" \
-            | jq -r '.[0].fecha // ""')
+            "${SB_URL}/rest/v1/movimientos?select=fecha&tipo=eq.horas&order=fecha.desc&limit=1"); then
+            echo "::error::Supabase no responde (${SB_URL})"
+            if [ "$HOUR_AR" -eq 17 ]; then
+              curl -fsS -X POST "https://ntfy.sh/${TOPIC}" \
+                -H "Title: Recordatorios rotos" \
+                -H "Priority: high" \
+                -H "Tags: warning" \
+                -d "No pude consultar Supabase para chequear jornadas pendientes. Revisar si el proyecto está pausado." || true
+            fi
+            exit 1
+          fi
+          LAST=$(echo "$RAW" | jq -r '.[0].fecha // ""')
 
           # Día de inicio: day after last, o today si no hay ninguna
           if [ -z "$LAST" ]; then
@@ -64,7 +88,7 @@ jobs:
             D=$(date -d "$D + 1 day" +%Y-%m-%d)
           done
 
-          echo "AR ${TODAY} — pendientes: ${PENDING_COUNT} (${PENDING_LIST})"
+          echo "AR ${TODAY} — pendientes: ${PENDING_COUNT} (${PENDING_LIST}) — entrega: $(date -u -d @${TARGET} 2>/dev/null || echo inmediata)"
 
           if [ "$PENDING_COUNT" -eq 0 ]; then
             echo "Sin jornadas pendientes."
@@ -80,6 +104,7 @@ jobs:
           fi
 
           curl -fsS -X POST "https://ntfy.sh/${TOPIC}" \
+            "${DELAY_HEADER[@]}" \
             -H "Title: ${TITLE}" \
             -H "Priority: high" \
             -H "Tags: briefcase,alarm_clock" \

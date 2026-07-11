@@ -1,0 +1,33 @@
+name: Keepalive (evita que GitHub desactive los crons)
+
+# GitHub desactiva los workflows programados de repos públicos tras 60 días
+# sin commits (así se murieron los recordatorios en junio 2026). Este job
+# corre cada 2 semanas y, si el último commit tiene más de 30 días, pushea
+# un commit vacío para resetear el contador.
+
+on:
+  schedule:
+    - cron: "43 6 1,15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit vacío si hace falta
+        run: |
+          LAST_TS=$(git log -1 --format=%ct)
+          AGE_DAYS=$(( ($(date +%s) - LAST_TS) / 86400 ))
+          echo "Último commit hace ${AGE_DAYS} día(s)."
+          if [ "$AGE_DAYS" -lt 30 ]; then
+            echo "Actividad reciente, no hace falta keepalive."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive para mantener activos los crons"
+          git push
