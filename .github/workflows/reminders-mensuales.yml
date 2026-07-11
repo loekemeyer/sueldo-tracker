@@ -3,9 +3,12 @@ name: Recordatorios mensuales (sueldo + comisiones)
 on:
   schedule:
     # Día 1 (sueldo) y día 10 (comisiones), entregados 18:00 AR en punto.
+    # Solo días de semana: si el 1 o el 10 caen en finde, se notifica el
+    # siguiente día hábil (por eso el cron cubre 1-3 y 10-12; el script
+    # decide qué día corresponde).
     # Corre ~35 min antes (17:25 AR = 20:25 UTC) porque GitHub Actions no es
     # puntual; la entrega exacta la hace ntfy con el header "At:".
-    - cron: "25 20 1,10 * *"
+    - cron: "25 20 1,2,3,10,11,12 * *"
   workflow_dispatch:
 
 permissions:
@@ -37,7 +40,23 @@ jobs:
             DELAY_HEADER=(-H "At: ${TARGET}")
           fi
 
-          echo "AR día ${DIA}, mes ${MES_LBL}, rango [${START}, ${END})"
+          # Día efectivo de cada recordatorio: el 1 (sueldo) y el 10
+          # (comisiones), corridos al lunes si caen sábado o domingo.
+          next_habil() {
+            local base_day="$1"
+            local d="${START%-01}-$(printf '%02d' "$base_day")"
+            local dow
+            dow=$(date -d "$d" +%u)
+            case "$dow" in
+              6) echo $(( base_day + 2 )) ;;
+              7) echo $(( base_day + 1 )) ;;
+              *) echo "$base_day" ;;
+            esac
+          }
+          SUELDO_DAY=$(next_habil 1)
+          COM_DAY=$(next_habil 10)
+
+          echo "AR día ${DIA}, mes ${MES_LBL}, rango [${START}, ${END}), sueldo día ${SUELDO_DAY}, comisiones día ${COM_DAY}"
 
           # Cuenta ingresos del mes con descripción que contenga keyword.
           has_ingreso() {
@@ -61,7 +80,7 @@ jobs:
               -d "${body}"
           }
 
-          if [ "$DIA" -eq 1 ]; then
+          if [ "$DIA" -eq "$SUELDO_DAY" ]; then
             SUELDO_COUNT=$(has_ingreso "sueldo") || { echo "::error::Supabase no responde (${SB_URL})"; exit 1; }
             if [ "$SUELDO_COUNT" -eq 0 ]; then
               echo "Sueldo ${MES_LBL} pendiente, envío notificación."
@@ -72,7 +91,7 @@ jobs:
             else
               echo "Sueldo ${MES_LBL} ya registrado (${SUELDO_COUNT}), skip."
             fi
-          elif [ "$DIA" -eq 10 ]; then
+          elif [ "$DIA" -eq "$COM_DAY" ]; then
             COM_COUNT=$(has_ingreso "comision") || { echo "::error::Supabase no responde (${SB_URL})"; exit 1; }
             if [ "$COM_COUNT" -eq 0 ]; then
               echo "Comisión ${MES_LBL} pendiente, envío notificación."
