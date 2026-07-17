@@ -36,8 +36,9 @@
   <header>
     <button id="btn-inv-back" class="icon-btn" aria-label="Volver">←</button>
     <div style="flex:1">
-      <div class="label">Total estimado</div>
+      <div class="label">Valor hoy (estimado)</div>
       <div id="inv-total" class="saldo">USD 0</div>
+      <div id="inv-invertido" class="label" style="text-transform:none;margin-top:4px">Invertido USD 0</div>
     </div>
     <button id="btn-inv-add" class="icon-btn" aria-label="Agregar">+</button>
   </header>
@@ -135,7 +136,15 @@
         </div>
       </div>
       <div class="fields-compra hidden">
-        <div class="field-row">
+        <div class="field">
+          <label>Tipo de activo</label>
+          <div class="subtabs" id="compra-tipo">
+            <button type="button" class="subtab active" data-ct="cedear">CEDEAR</button>
+            <button type="button" class="subtab" data-ct="accion_us">Acción EEUU</button>
+            <button type="button" class="subtab" data-ct="usd">Dólar</button>
+          </div>
+        </div>
+        <div class="field-row" id="row-ticker">
           <div class="field">
             <label for="input-ticker">Ticker</label>
             <input type="text" id="input-ticker" placeholder="SPY, BRKB..." autocomplete="off" autocapitalize="characters">
@@ -147,13 +156,17 @@
         </div>
         <div class="field-row">
           <div class="field">
-            <label for="input-cantidad">Cantidad</label>
+            <label for="input-cantidad" id="label-cantidad">Cantidad</label>
             <input type="number" id="input-cantidad" step="0.01" placeholder="0" inputmode="decimal">
           </div>
           <div class="field">
-            <label for="input-precio">Precio ARS / unidad</label>
+            <label for="input-precio" id="label-precio">Precio ARS / unidad</label>
             <input type="number" id="input-precio" step="0.01" placeholder="0" inputmode="decimal">
           </div>
+        </div>
+        <div class="field" id="field-ratio">
+          <label for="input-ratio">Ratio — CEDEARs por 1 acción real</label>
+          <input type="number" id="input-ratio" step="1" min="1" placeholder="ej. 20 (SPY)" inputmode="numeric">
         </div>
         <div id="preview-total" class="preview-total"></div>
       </div>
