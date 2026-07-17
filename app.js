@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.18";
+const APP_VERSION = "1.19";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -36,6 +36,27 @@ const setCheckTime = (t) => localStorage.setItem(KEY_CHECK, t);
 
 // ==== Format ====
 const fmt = (n) => "$" + Math.round(n).toLocaleString("es-AR");
+
+// Parseo tolerante al formato argentino.
+// Importes en pesos: "84.100" -> 84100, "1.234,56" -> 1234.56 (punto = miles, coma = decimal).
+function parseImporte(str) {
+  if (str == null) return NaN;
+  let s = String(str).trim().replace(/[\s$]/g, "");
+  if (!s) return NaN;
+  if (s.includes(",")) {
+    s = s.replace(/\./g, "").replace(",", ".");   // coma decimal, punto miles
+  } else {
+    s = s.replace(/\./g, "");                      // sin coma: los puntos son miles
+  }
+  return Number(s);
+}
+// Números chicos (cantidades, precios USD): coma o punto = decimal, sin miles.
+function parseNum(str) {
+  if (str == null) return NaN;
+  const s = String(str).trim().replace(/\s/g, "").replace(",", ".");
+  if (!s) return NaN;
+  return Number(s);
+}
 const hoyISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -512,9 +533,14 @@ function setTipo(t) {
 }
 tabs.forEach(tab => tab.addEventListener("click", () => setTipo(tab.dataset.tipo)));
 
+// El precio se escribe en ARS (CEDEAR/dólar) o USD (acción EEUU).
+function precioCompraActual() {
+  return compraTipo === "accion_us" ? parseNum(inputPrecio.value) : parseImporte(inputPrecio.value);
+}
+
 function updateCompraPreview() {
-  const cant = Number(inputCantidad.value);
-  const precio = Number(inputPrecio.value);
+  const cant = parseNum(inputCantidad.value);
+  const precio = precioCompraActual();
   const preview = $("preview-total");
   if (!cant || !precio) { preview.textContent = ""; return; }
   const total = cant * precio;
@@ -540,7 +566,7 @@ async function sugerirPrecioCompra() {
   const fechaStr = inputFecha.value;
   if ((tipo !== "usd" && !ticker) || !fechaStr) { hint.textContent = ""; return; }
   // Respeta un precio cargado a mano (no lo pisa).
-  if (inputPrecio.value && Number(inputPrecio.value) > 0 && !precioAutocompletado) return;
+  if (inputPrecio.value && precioCompraActual() > 0 && !precioAutocompletado) return;
 
   const token = ++precioSugeridoToken;
   hint.textContent = "Buscando precio sugerido…";
@@ -551,7 +577,7 @@ async function sugerirPrecioCompra() {
     return;
   }
   // Sólo autocompleta si el campo sigue vacío o lo había puesto la sugerencia.
-  if (!inputPrecio.value || Number(inputPrecio.value) <= 0 || precioAutocompletado) {
+  if (!inputPrecio.value || precioCompraActual() <= 0 || precioAutocompletado) {
     inputPrecio.value = tipo === "accion_us" ? Number(precio.toFixed(2)) : Math.round(precio);
     precioAutocompletado = true;
     updateCompraPreview();
@@ -573,7 +599,7 @@ $("form-add").addEventListener("submit", async (e) => {
     if (tipoActivo === "compra") {
       await handleCompraSubmit();
     } else {
-      const monto = Number(inputValor.value);
+      const monto = parseImporte(inputValor.value);
       if (!monto || monto <= 0) { alert("Monto inválido"); return; }
       const fechaStr = inputFechaMov.value || hoyISO();
       if (!fechaStr) { alert("Falta la fecha"); return; }
@@ -731,8 +757,8 @@ async function fetchPreciosActualesLive(tickers) {
 async function handleCompraSubmit() {
   const tipo = compraTipo; // "cedear" | "accion_us" | "usd"
   const ticker = tipo === "usd" ? "USD" : inputTicker.value.trim().toUpperCase();
-  const cantidad = Number(inputCantidad.value);
-  let precio = Number(inputPrecio.value);
+  const cantidad = parseNum(inputCantidad.value);
+  let precio = precioCompraActual();
   const fechaStr = inputFecha.value || hoyISO();
   if (tipo !== "usd" && !ticker) { alert("Falta el ticker"); return; }
   if (!cantidad || cantidad <= 0) { alert("Cantidad inválida"); return; }
@@ -913,7 +939,7 @@ async function editarMovimiento(id) {
   if (esHoras) {
     fields.push({ key: "horas", label: "Horas trabajadas", type: "number", step: "0.5", min: 0, value: m.horas ?? "", hint: "El monto se recalcula: horas × valor hora del mes." });
   } else {
-    fields.push({ key: "monto", label: "Monto", type: "number", step: "100", min: 0, value: m.monto });
+    fields.push({ key: "monto", label: "Monto", type: "pesos", value: m.monto });
   }
 
   const vals = await openFormModal({
@@ -964,7 +990,8 @@ let modalValidate = null;
 let modalBuild = null;
 
 // Dibuja los campos del modal. defs: array de fields.
-// field: { key, label, type: "text"|"number"|"date"|"select", value, placeholder, hint, step, min, options, reactive }
+// field: { key, label, type: "text"|"number"|"pesos"|"date"|"select", value, placeholder, hint, step, min, options, reactive }
+// "pesos": importe en $ que acepta formato argentino (84.100). "number": número chico (decimal con . o ,).
 function renderModalFields(defs, focusFirst) {
   modalFieldDefs = defs;
   const cont = $("modal-fields");
@@ -978,13 +1005,13 @@ function renderModalFields(defs, focusFirst) {
       ).join("");
       control = `<select id="${id}">${opts}</select>`;
     } else {
-      const inputType = f.type === "date" ? "date" : f.type === "number" ? "number" : "text";
+      // "pesos" y "number" van como texto con teclado decimal (así aceptan puntos de miles).
+      const numeric = f.type === "number" || f.type === "pesos";
+      const inputType = f.type === "date" ? "date" : "text";
       const attrs = [
         `id="${id}"`, `type="${inputType}"`,
-        f.step ? `step="${f.step}"` : "",
-        f.min != null ? `min="${f.min}"` : "",
         f.placeholder ? `placeholder="${escapeHtml(f.placeholder)}"` : "",
-        inputType === "number" ? 'inputmode="decimal"' : "",
+        numeric ? 'inputmode="decimal" autocomplete="off"' : "",
       ].filter(Boolean).join(" ");
       control = `<input ${attrs} value="${f.value != null && f.value !== "" ? escapeHtml(String(f.value)) : ""}">`;
     }
@@ -1029,7 +1056,9 @@ function readModalValues() {
   for (const f of modalFieldDefs) {
     const el = $(`modal-f-${f.key}`);
     const raw = el ? el.value.trim() : "";
-    out[f.key] = f.type === "number" ? (raw === "" ? null : Number(raw)) : raw;
+    if (f.type === "pesos") out[f.key] = raw === "" ? null : parseImporte(raw);
+    else if (f.type === "number") out[f.key] = raw === "" ? null : parseNum(raw);
+    else out[f.key] = raw;
   }
   return out;
 }
@@ -1477,9 +1506,9 @@ async function agregarInversion() {
     if (tipo === "accion_us") {
       fs.push({ key: "precio", label: "Precio USD / unidad", type: "number", step: "0.01", value: v.precio ?? "" });
     } else if (tipo === "usd") {
-      fs.push({ key: "precio", label: "Tipo de cambio ARS / USD", type: "number", step: "0.01", value: v.precio ?? "" });
+      fs.push({ key: "precio", label: "Tipo de cambio ARS / USD", type: "pesos", value: v.precio ?? "" });
     } else { // cedear
-      fs.push({ key: "precio", label: "Precio ARS / unidad", type: "number", step: "0.01", value: v.precio ?? "" });
+      fs.push({ key: "precio", label: "Precio ARS / unidad", type: "pesos", value: v.precio ?? "" });
       fs.push({ key: "ratio", label: "Ratio (CEDEARs por acción)", type: "number", step: "1", min: 1, value: v.ratio ?? "", hint: "Vacío = lo estimo al guardar." });
     }
     fs.push({ key: "fecha", label: "Fecha", type: "date", value: v.fecha || hoyISO() });
@@ -1736,10 +1765,10 @@ async function editarLote(id, onDone = renderTickerDetail) {
   if (tipo === "accion_us") {
     fields.push({ key: "precio_usd", label: "Precio USD / unidad", type: "number", step: "0.01", value: r.precio_usd ?? "" });
   } else if (tipo === "usd") {
-    fields.push({ key: "precio_ars", label: "Tipo de cambio ARS / USD", type: "number", step: "0.01", value: r.precio_ars ?? "" });
+    fields.push({ key: "precio_ars", label: "Tipo de cambio ARS / USD", type: "pesos", value: r.precio_ars ?? "" });
   } else { // cedear
-    fields.push({ key: "precio_ars", label: "Precio ARS / unidad", type: "number", step: "0.01", value: r.precio_ars ?? "" });
-    fields.push({ key: "mep", label: "Dólar MEP del día", type: "number", step: "0.01", value: r.mep ?? "", hint: "Vacío = lo busco automático." });
+    fields.push({ key: "precio_ars", label: "Precio ARS / unidad", type: "pesos", value: r.precio_ars ?? "" });
+    fields.push({ key: "mep", label: "Dólar MEP del día", type: "pesos", value: r.mep ?? "", hint: "Vacío = lo busco automático." });
   }
   fields.push({ key: "fecha", label: "Fecha", type: "date", value: fechaActual });
   fields.push({ key: "notas", label: "Notas (opcional)", type: "text", value: r.notas || "", placeholder: "Detalle" });
