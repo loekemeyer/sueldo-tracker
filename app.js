@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.16";
+const APP_VERSION = "1.17";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -903,39 +903,46 @@ function render() {
 async function editarMovimiento(id) {
   const m = getCache().find(x => x.id === id);
   if (!m) return;
-
-  const desc = prompt("Descripción:", m.desc || "");
-  if (desc === null) return;
-
+  const esHoras = m.tipo === "horas";
   const fechaActual = new Date(m.fecha).toISOString().slice(0, 10);
-  const fechaStr = prompt("Fecha (YYYY-MM-DD):", fechaActual);
-  if (fechaStr === null) return;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaStr.trim())) { alert("Fecha inválida (formato YYYY-MM-DD)"); return; }
 
-  let horas = m.horas;
-  let monto = m.monto;
-  if (m.tipo === "horas") {
-    const hStr = prompt("Horas trabajadas:", m.horas != null ? String(m.horas) : "");
-    if (hStr === null) return;
-    horas = Number(hStr);
-    if (!horas || horas <= 0) { alert("Horas inválidas"); return; }
-    monto = horas * getValorHoraForDate(new Date(fechaStr.trim() + "T12:00:00-03:00"));
-    if (!confirm(`${horas}hs × valor hora = ${fmt(monto)}. ¿Guardar?`)) return;
+  const fields = [
+    { key: "desc", label: "Descripción", type: "text", value: m.desc || "", placeholder: "Detalle" },
+    { key: "fecha", label: "Fecha", type: "date", value: fechaActual },
+  ];
+  if (esHoras) {
+    fields.push({ key: "horas", label: "Horas trabajadas", type: "number", step: "0.5", min: 0, value: m.horas ?? "", hint: "El monto se recalcula: horas × valor hora del mes." });
   } else {
-    const mStr = prompt("Monto:", String(m.monto));
-    if (mStr === null) return;
-    monto = Number(mStr);
-    if (!monto || monto <= 0) { alert("Monto inválido"); return; }
+    fields.push({ key: "monto", label: "Monto", type: "number", step: "100", min: 0, value: m.monto });
   }
 
-  const fechaIso = `${fechaStr.trim()} 12:00:00-03:00`;
+  const vals = await openFormModal({
+    title: `Editar ${m.tipo}`,
+    fields,
+    validate: v => {
+      if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) return "Fecha inválida.";
+      if (esHoras) { if (!v.horas || v.horas <= 0) return "Horas inválidas."; }
+      else { if (!v.monto || v.monto <= 0) return "Monto inválido."; }
+      return null;
+    },
+  });
+  if (!vals) return;
+
+  let horas = m.horas, monto = m.monto;
+  if (esHoras) {
+    horas = vals.horas;
+    monto = horas * getValorHoraForDate(new Date(vals.fecha + "T12:00:00-03:00"));
+  } else {
+    monto = vals.monto;
+  }
+
   try {
     const updated = await sbUpdate(id, {
-      fecha: fechaIso,
+      fecha: `${vals.fecha} 12:00:00-03:00`,
       tipo: m.tipo,
       horas,
       monto,
-      desc: desc.trim() || m.tipo,
+      desc: (vals.desc || "").trim() || m.tipo,
     });
     const nuevo = getCache().map(x => (x.id === id ? updated : x));
     nuevo.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
@@ -949,6 +956,84 @@ async function editarMovimiento(id) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// ==== Modal de formulario reutilizable (editar en pantalla) ====
+let modalResolve = null;
+let modalFieldDefs = [];
+let modalValidate = null;
+
+// Abre una hoja con inputs y resuelve con {key: valor} al guardar, o null si se cancela.
+// Cada field: { key, label, type: "text"|"number"|"date", value, placeholder, hint, step, min }
+function openFormModal({ title, fields, saveLabel = "Guardar", validate = null }) {
+  return new Promise(resolve => {
+    modalResolve = resolve;
+    modalFieldDefs = fields;
+    modalValidate = validate;
+    $("modal-title").textContent = title;
+    $("modal-save").textContent = saveLabel;
+    $("modal-error").textContent = "";
+
+    const cont = $("modal-fields");
+    cont.innerHTML = "";
+    for (const f of fields) {
+      const id = `modal-f-${f.key}`;
+      const inputType = f.type === "date" ? "date" : f.type === "number" ? "number" : "text";
+      const attrs = [
+        `id="${id}"`, `type="${inputType}"`,
+        f.step ? `step="${f.step}"` : "",
+        f.min != null ? `min="${f.min}"` : "",
+        f.placeholder ? `placeholder="${escapeHtml(f.placeholder)}"` : "",
+        inputType === "number" ? 'inputmode="decimal"' : "",
+      ].filter(Boolean).join(" ");
+      const wrap = document.createElement("div");
+      wrap.className = "field";
+      wrap.innerHTML = `
+        <label for="${id}">${escapeHtml(f.label)}</label>
+        <input ${attrs} value="${f.value != null && f.value !== "" ? escapeHtml(String(f.value)) : ""}">
+        ${f.hint ? `<div class="hint" style="text-align:left;margin:2px 0 0">${escapeHtml(f.hint)}</div>` : ""}
+      `;
+      cont.appendChild(wrap);
+    }
+
+    $("modal").classList.remove("hidden");
+    const first = cont.querySelector("input");
+    if (first) setTimeout(() => first.focus(), 60);
+  });
+}
+
+function readModalValues() {
+  const out = {};
+  for (const f of modalFieldDefs) {
+    const el = $(`modal-f-${f.key}`);
+    const raw = el ? el.value.trim() : "";
+    out[f.key] = f.type === "number" ? (raw === "" ? null : Number(raw)) : raw;
+  }
+  return out;
+}
+
+function closeModal(result) {
+  $("modal").classList.add("hidden");
+  const r = modalResolve;
+  modalResolve = null;
+  modalValidate = null;
+  if (r) r(result);
+}
+
+$("modal-save").addEventListener("click", () => {
+  const values = readModalValues();
+  if (modalValidate) {
+    const err = modalValidate(values);
+    if (err) { $("modal-error").textContent = err; return; }
+  }
+  closeModal(values);
+});
+$("modal-cancel").addEventListener("click", () => closeModal(null));
+$("modal-close").addEventListener("click", () => closeModal(null));
+// Tocar el fondo (fuera de la tarjeta) cancela.
+$("modal").addEventListener("click", e => { if (e.target === $("modal")) closeModal(null); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("modal").classList.contains("hidden")) closeModal(null);
+});
 
 // ==== Banner control diario ====
 function pasoHoraControl() {
@@ -1594,42 +1679,55 @@ function renderTickerDetail() {
 async function editarLote(id, onDone = renderTickerDetail) {
   const r = inversionesCache.find(x => x.id === id);
   if (!r) return;
-
-  const cantStr = prompt("Cantidad (+ compra, − venta):", String(r.cantidad));
-  if (cantStr === null) return;
-  const cantidad = Number(cantStr);
-  if (!cantidad) { alert("Cantidad inválida"); return; }
-
-  const pArsStr = prompt("Precio ARS por unidad (vacío = null):", r.precio_ars == null ? "" : String(r.precio_ars));
-  if (pArsStr === null) return;
-  const precio_ars = pArsStr.trim() ? Number(pArsStr) : null;
-
-  const pUsdStr = prompt("Precio USD por unidad (vacío = null):", r.precio_usd == null ? "" : String(r.precio_usd));
-  if (pUsdStr === null) return;
-  const precio_usd = pUsdStr.trim() ? Number(pUsdStr) : null;
-
-  const mepStr = prompt("Dolar MEP del día (vacío = buscar):", r.mep == null ? "" : String(r.mep));
-  if (mepStr === null) return;
-  let mep = mepStr.trim() ? Number(mepStr) : null;
-
+  const tipo = tipoDe(r);
   const fechaActual = new Date(r.fecha).toISOString().slice(0, 10);
-  const fechaStr = prompt("Fecha (YYYY-MM-DD):", fechaActual);
-  if (fechaStr === null) return;
 
-  // Si se dejó MEP vacío, buscarlo
-  if (!mep) mep = await fetchMepForDate(fechaStr);
+  const fields = [
+    { key: "cantidad", label: "Cantidad (+ compra / − venta)", type: "number", step: "0.01", value: r.cantidad },
+  ];
+  if (tipo === "accion_us") {
+    fields.push({ key: "precio_usd", label: "Precio USD / unidad", type: "number", step: "0.01", value: r.precio_usd ?? "" });
+  } else if (tipo === "usd") {
+    fields.push({ key: "precio_ars", label: "Tipo de cambio ARS / USD", type: "number", step: "0.01", value: r.precio_ars ?? "" });
+  } else { // cedear
+    fields.push({ key: "precio_ars", label: "Precio ARS / unidad", type: "number", step: "0.01", value: r.precio_ars ?? "" });
+    fields.push({ key: "mep", label: "Dólar MEP del día", type: "number", step: "0.01", value: r.mep ?? "", hint: "Vacío = lo busco automático." });
+  }
+  fields.push({ key: "fecha", label: "Fecha", type: "date", value: fechaActual });
+  fields.push({ key: "notas", label: "Notas (opcional)", type: "text", value: r.notas || "", placeholder: "Detalle" });
 
-  const notas = prompt("Notas:", r.notas || "");
-  if (notas === null) return;
+  const vals = await openFormModal({
+    title: `Editar ${tipo === "usd" ? "USD" : r.ticker}`,
+    fields,
+    validate: v => {
+      if (!v.cantidad || v.cantidad === 0) return "Cantidad inválida.";
+      if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) return "Fecha inválida.";
+      return null;
+    },
+  });
+  if (!vals) return;
+
+  let precio_ars = null, precio_usd = null, mep = null;
+  if (tipo === "accion_us") {
+    precio_usd = vals.precio_usd ?? null;
+  } else if (tipo === "usd") {
+    precio_ars = vals.precio_ars ?? null;
+    precio_usd = 1;
+    mep = vals.precio_ars ?? null;
+  } else { // cedear
+    precio_ars = vals.precio_ars ?? null;
+    mep = vals.mep ?? null;
+    if (!mep) mep = await fetchMepForDate(vals.fecha);
+  }
 
   try {
     await sbPatchInversion(id, {
-      cantidad,
+      cantidad: vals.cantidad,
       precio_ars,
       precio_usd,
       mep,
-      fecha: `${fechaStr} 12:00:00-03:00`,
-      notas: notas.trim() || null,
+      fecha: `${vals.fecha} 12:00:00-03:00`,
+      notas: (vals.notas || "").trim() || null,
     });
     await sbFetchInversiones();
     onDone();

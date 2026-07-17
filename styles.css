@@ -363,3 +363,40 @@ li:active { background: var(--surface-2); }
   z-index: 1000;
 }
 .vh-link { padding: 0 !important; color: var(--text) !important; border: none !important; background: transparent !important; text-align: left; font-weight: 600; }
+
+/* Modal / hoja inferior (editar en pantalla) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: modal-fade 0.18s ease;
+}
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  width: 100%;
+  max-width: 480px;
+  padding: 18px 16px calc(env(safe-area-inset-bottom) + 18px);
+  max-height: 92vh;
+  overflow-y: auto;
+  box-shadow: 0 -10px 44px -14px rgba(0, 0, 0, 0.65);
+  animation: sheet-up 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.modal-header h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.modal-header .icon-btn { width: 38px; height: 38px; font-size: 15px; }
+#modal-fields { display: flex; flex-direction: column; gap: 14px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 22px; }
+.modal-actions button { flex: 1; }
+#modal-error { color: var(--neg); font-size: 13px; min-height: 0; text-align: center; }
+#modal-error:not(:empty) { min-height: 18px; margin-top: 12px; }
