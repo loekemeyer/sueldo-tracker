@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.11";
+const APP_VERSION = "1.14";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -381,8 +381,57 @@ const inputCantidad = $("input-cantidad");
 const inputPrecio = $("input-precio");
 const inputFecha = $("input-fecha");
 const inputFechaMov = $("input-fecha-mov");
+const inputRatio = $("input-ratio");
 const fieldsDefault = document.querySelector(".fields-default");
 const fieldsCompra = document.querySelector(".fields-compra");
+const compraTipoTabs = document.querySelectorAll("#compra-tipo .subtab");
+
+// Tipo de activo en la solapa de compra: "cedear" | "accion_us" | "usd"
+let compraTipo = "cedear";
+
+function setCompraTipo(ct) {
+  compraTipo = ct;
+  compraTipoTabs.forEach(b => b.classList.toggle("active", b.dataset.ct === ct));
+
+  const rowTicker = $("row-ticker");
+  const fieldRatio = $("field-ratio");
+  const labelCantidad = $("label-cantidad");
+  const labelPrecio = $("label-precio");
+
+  // USD cash: ticker fijo, sin ratio; precio = tipo de cambio.
+  if (rowTicker) rowTicker.classList.toggle("hidden", ct === "usd");
+  if (fieldRatio) fieldRatio.classList.toggle("hidden", ct !== "cedear");
+
+  if (labelCantidad) labelCantidad.textContent = ct === "usd" ? "Cantidad (USD)" : "Cantidad";
+  if (labelPrecio) {
+    labelPrecio.textContent =
+      ct === "usd" ? "Tipo de cambio ARS / USD"
+      : ct === "accion_us" ? "Precio USD / unidad"
+      : "Precio ARS / unidad";
+  }
+  if (ct === "cedear") autofillRatio();
+  // Al cambiar de tipo, el precio cambia de moneda: si lo había puesto la sugerencia,
+  // lo descarto y vuelvo a sugerir. Un precio cargado a mano se respeta.
+  if (precioAutocompletado) { inputPrecio.value = ""; precioAutocompletado = false; }
+  updateCompraPreview();
+  sugerirPrecioCompra();
+}
+compraTipoTabs.forEach(b => b.addEventListener("click", () => setCompraTipo(b.dataset.ct)));
+
+// Autocompleta el ratio si el ticker ya es conocido (no vuelve a preguntar).
+function autofillRatio() {
+  if (!inputRatio) return;
+  const t = inputTicker.value.trim().toUpperCase();
+  const r = t ? ratioConocido(t) : null;
+  if (r) {
+    inputRatio.value = r;
+    inputRatio.placeholder = `${r} (conocido)`;
+  } else {
+    inputRatio.value = "";
+    inputRatio.placeholder = "ej. 20 (SPY)";
+  }
+}
+if (inputTicker) inputTicker.addEventListener("input", () => { if (compraTipo === "cedear") autofillRatio(); });
 
 function setTipo(t) {
   tipoActivo = t;
@@ -390,6 +439,7 @@ function setTipo(t) {
   const isCompra = t === "compra";
   if (fieldsDefault) fieldsDefault.classList.toggle("hidden", isCompra);
   if (fieldsCompra) fieldsCompra.classList.toggle("hidden", !isCompra);
+  if (isCompra) setCompraTipo(compraTipo);
   if (isCompra && inputFecha && !inputFecha.value) inputFecha.value = hoyISO();
   if (!isCompra && inputFechaMov && !inputFechaMov.value) inputFechaMov.value = hoyISO();
 }
@@ -399,14 +449,54 @@ function updateCompraPreview() {
   const cant = Number(inputCantidad.value);
   const precio = Number(inputPrecio.value);
   const preview = $("preview-total");
-  if (cant && precio) {
-    preview.textContent = `Total ${fmt(cant * precio)} (sale del saldo)`;
+  if (!cant || !precio) { preview.textContent = ""; return; }
+  const total = cant * precio;
+  if (compraTipo === "accion_us") {
+    preview.textContent = `Total USD ${total.toLocaleString("es-AR", { maximumFractionDigits: 2 })} (no sale del saldo en $)`;
   } else {
-    preview.textContent = "";
+    preview.textContent = `Total ${fmt(total)} (sale del saldo)`;
   }
 }
 if (inputCantidad) inputCantidad.addEventListener("input", updateCompraPreview);
 if (inputPrecio) inputPrecio.addEventListener("input", updateCompraPreview);
+
+// Sugerencia automática del precio de compra: al tener ticker + fecha, busca en
+// Yahoo el precio de ese día (CEDEAR en ARS, acción EEUU en USD, dólar = tipo de
+// cambio) y lo autocompleta si el usuario todavía no cargó un precio a mano.
+let precioSugeridoToken = 0;
+let precioAutocompletado = false; // true si el valor actual lo puso la sugerencia
+async function sugerirPrecioCompra() {
+  const hint = $("precio-hint");
+  if (!hint) return;
+  const tipo = compraTipo;
+  const ticker = tipo === "usd" ? "USD" : inputTicker.value.trim().toUpperCase();
+  const fechaStr = inputFecha.value;
+  if ((tipo !== "usd" && !ticker) || !fechaStr) { hint.textContent = ""; return; }
+  // Respeta un precio cargado a mano (no lo pisa).
+  if (inputPrecio.value && Number(inputPrecio.value) > 0 && !precioAutocompletado) return;
+
+  const token = ++precioSugeridoToken;
+  hint.textContent = "Buscando precio sugerido…";
+  const precio = await fetchPrecioHistorico(ticker, fechaStr, tipo);
+  if (token !== precioSugeridoToken) return; // llegó otra búsqueda más nueva
+  if (precio == null) {
+    hint.textContent = "Sin precio sugerido para esa fecha — cargalo a mano.";
+    return;
+  }
+  // Sólo autocompleta si el campo sigue vacío o lo había puesto la sugerencia.
+  if (!inputPrecio.value || Number(inputPrecio.value) <= 0 || precioAutocompletado) {
+    inputPrecio.value = tipo === "accion_us" ? Number(precio.toFixed(2)) : Math.round(precio);
+    precioAutocompletado = true;
+    updateCompraPreview();
+  }
+  const unidad = tipo === "accion_us" ? `USD ${precio.toFixed(2)}` : fmt(precio);
+  const etiqueta = tipo === "usd" ? "Tipo de cambio sugerido" : "Precio sugerido";
+  hint.textContent = `${etiqueta} (Yahoo) para ${fechaStr}: ${unidad} — editá si no coincide.`;
+}
+if (inputTicker) inputTicker.addEventListener("change", sugerirPrecioCompra);
+if (inputFecha) inputFecha.addEventListener("change", sugerirPrecioCompra);
+// Si el usuario escribe el precio a mano, deja de considerarse autocompletado.
+if (inputPrecio) inputPrecio.addEventListener("input", () => { precioAutocompletado = false; });
 
 $("form-add").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -463,29 +553,42 @@ async function fetchMepForDate(fechaStr) {
   return null;
 }
 
-async function fetchPrecioHistorico(ticker, fechaStr) {
-  const symbol = ticker === "USD" ? "ARS=X" : `${ticker}.BA`;
-  const fecha = new Date(fechaStr + "T12:00:00-03:00").getTime() / 1000;
-  const start = Math.floor(fecha - 86400 * 5);
-  const end = Math.floor(fecha + 86400 * 2);
-  const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${start}&period2=${end}&interval=1d`;
+// tipo: "cedear" (precio ARS en BYMA, símbolo .BA), "accion_us" (precio USD, símbolo plano),
+// "usd" (tipo de cambio ARS/USD).
+// Símbolo de Yahoo según el tipo de activo:
+//  - cedear    -> "<TICKER>.BA" (CEDEAR en BYMA, precio en ARS)
+//  - accion_us -> "<TICKER>"    (acción en EEUU / subyacente, precio en USD)
+//  - usd       -> "ARS=X"       (tipo de cambio ARS por USD)
+function symbolDe(ticker, tipo) {
+  if (tipo === "usd" || ticker === "USD") return "ARS=X";
+  return tipo === "accion_us" ? ticker : `${ticker}.BA`;
+}
 
-  async function tryFetch(url) {
-    const res = await fetch(url);
+// GET a Yahoo Finance con fallback por proxy CORS si el request directo falla.
+async function yahooFetch(url) {
+  async function tryFetch(u) {
+    const res = await fetch(u);
     if (!res.ok) throw new Error(res.status);
     return res.json();
   }
-
-  let data;
   try {
-    data = await tryFetch(targetUrl);
+    return await tryFetch(url);
   } catch {
     try {
-      data = await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`);
+      return await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
     } catch {
       return null;
     }
   }
+}
+
+async function fetchPrecioHistorico(ticker, fechaStr, tipo = "cedear") {
+  const symbol = symbolDe(ticker, tipo);
+  const fecha = new Date(fechaStr + "T12:00:00-03:00").getTime() / 1000;
+  const start = Math.floor(fecha - 86400 * 5);
+  const end = Math.floor(fecha + 86400 * 2);
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?period1=${start}&period2=${end}&interval=1d`;
+  const data = await yahooFetch(url);
 
   const result = data?.chart?.result?.[0];
   if (!result) return null;
@@ -500,62 +603,128 @@ async function fetchPrecioHistorico(ticker, fechaStr) {
   return best;
 }
 
+// Precio actual del subyacente en USD (símbolo plano en el mercado de EEUU).
+// Sirve tanto para CEDEARs (valor de la acción real) como para acciones de EEUU.
+async function fetchPrecioActualUsd(ticker) {
+  if (!ticker || ticker === "USD") return null;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5d`;
+  const data = await yahooFetch(url);
+  const result = data?.chart?.result?.[0];
+  const meta = result?.meta;
+  if (meta?.regularMarketPrice != null) return Number(meta.regularMarketPrice);
+  // Fallback: último cierre disponible.
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  for (let i = closes.length - 1; i >= 0; i--) {
+    if (closes[i] != null) return Number(closes[i]);
+  }
+  return null;
+}
+
+// Refresca en vivo el precio actual (USD) de todos los tickers de la cartera.
+async function fetchPreciosActualesLive(tickers) {
+  const uniq = [...new Set(tickers.filter(t => t && t !== "USD"))];
+  const pares = await Promise.all(uniq.map(async t => [t, await fetchPrecioActualUsd(t)]));
+  for (const [t, precio] of pares) {
+    if (precio != null) {
+      preciosActualesCache[t] = { ...(preciosActualesCache[t] || {}), ticker: t, precio_usd: precio, live: true };
+    }
+  }
+  preciosActualizados = new Date();
+}
+
 async function handleCompraSubmit() {
-  const ticker = inputTicker.value.trim().toUpperCase();
+  const tipo = compraTipo; // "cedear" | "accion_us" | "usd"
+  const ticker = tipo === "usd" ? "USD" : inputTicker.value.trim().toUpperCase();
   const cantidad = Number(inputCantidad.value);
   let precio = Number(inputPrecio.value);
   const fechaStr = inputFecha.value || hoyISO();
-  if (!ticker) { alert("Falta el ticker"); return; }
+  if (tipo !== "usd" && !ticker) { alert("Falta el ticker"); return; }
   if (!cantidad || cantidad <= 0) { alert("Cantidad inválida"); return; }
   if (!fechaStr) { alert("Falta la fecha"); return; }
 
+  // Ratio: sólo para CEDEARs. Se pregunta si es un ticker nuevo.
+  let ratio = null;
+  if (tipo === "cedear") {
+    ratio = Number(inputRatio.value) || ratioConocido(ticker);
+    if (!ratio || ratio <= 0) {
+      const rStr = prompt(`¿Cuántos CEDEARs equivalen a 1 acción real de ${ticker}? (ej. 20)`);
+      if (rStr === null) return;
+      ratio = Number(rStr);
+      if (!ratio || ratio <= 0) { alert("Ratio inválido"); return; }
+    }
+    setRatio(ticker, ratio);
+  }
+
+  // Si falta el precio, buscarlo (ARS para CEDEAR/USD, USD para acción de EEUU).
   if (!precio || precio <= 0) {
     const btn = document.querySelector("#form-add button[type=submit]");
     if (btn) btn.textContent = "Buscando precio...";
-    const lookup = await fetchPrecioHistorico(ticker, fechaStr);
+    const lookup = await fetchPrecioHistorico(ticker, fechaStr, tipo);
     if (btn) btn.textContent = "Agregar";
     if (!lookup) { alert(`No pude obtener el precio de ${ticker} para ${fechaStr}. Ingresalo a mano.`); return; }
     precio = lookup;
-    if (!confirm(`Precio encontrado para ${ticker} el ${fechaStr}: ${fmt(precio)}/u. ¿Usar este?`)) return;
+    const unidad = tipo === "accion_us" ? `USD ${precio.toFixed(2)}` : fmt(precio);
+    if (!confirm(`Precio encontrado para ${ticker} el ${fechaStr}: ${unidad}/u. ¿Usar este?`)) return;
   }
 
   const total = cantidad * precio;
-  if (!confirm(`Comprar ${cantidad} ${ticker} a ${fmt(precio)}/u = ${fmt(total)} (se descuenta del saldo). ¿Confirmar?`)) return;
-
-  const tipo_activo = ticker === "USD" ? "usd" : "cedear";
   const fechaIso = `${fechaStr} 12:00:00-03:00`;
 
-  // Busca MEP del día de la compra para dolarizar
-  const mep = await fetchMepForDate(fechaStr);
+  // Confirmación + payload según el tipo.
+  let inv, egresoMonto = null;
+  if (tipo === "accion_us") {
+    // Acción de EEUU: precio en USD, no lleva ratio ni sale del saldo en pesos.
+    if (!confirm(`Comprar ${cantidad} ${ticker} (acción EEUU) a USD ${precio.toFixed(2)}/u = USD ${total.toFixed(2)}. No se descuenta del saldo en $. ¿Confirmar?`)) return;
+    inv = {
+      ticker, tipo_activo: "accion_us", cantidad,
+      precio_ars: null, precio_usd: precio, mep: null,
+      fecha: fechaIso, notas: "compra desde app",
+    };
+  } else if (tipo === "usd") {
+    // Dólar cash: precio = tipo de cambio ARS/USD. Sale del saldo en pesos.
+    if (!confirm(`Comprar ${cantidad} USD a ${fmt(precio)}/USD = ${fmt(total)} (se descuenta del saldo). ¿Confirmar?`)) return;
+    inv = {
+      ticker: "USD", tipo_activo: "usd", cantidad,
+      precio_ars: precio, precio_usd: 1, mep: precio,
+      fecha: fechaIso, notas: "compra desde app",
+    };
+    egresoMonto = total;
+  } else {
+    // CEDEAR: precio en ARS. Sale del saldo. Se dolariza al MEP del día.
+    if (!confirm(`Comprar ${cantidad} ${ticker} (CEDEAR ${ratio}:1) a ${fmt(precio)}/u = ${fmt(total)} (se descuenta del saldo). ¿Confirmar?`)) return;
+    const mep = await fetchMepForDate(fechaStr);
+    inv = {
+      ticker, tipo_activo: "cedear", cantidad,
+      precio_ars: precio, precio_usd: null, mep,
+      fecha: fechaIso, notas: "compra desde app",
+    };
+    egresoMonto = total;
+  }
 
-  await sbInsertInversion({
-    ticker,
-    tipo_activo,
-    cantidad,
-    precio_ars: precio,
-    precio_usd: null,
-    mep,
-    fecha: fechaIso,
-    notas: "compra desde app",
-  });
+  await sbInsertInversion(inv);
 
-  const egreso = await sbInsert({
-    fecha: new Date().toISOString(),
-    tipo: "egreso",
-    horas: null,
-    monto: total,
-    desc: `Compra ${cantidad} ${ticker}`,
-  });
-  const cache = getCache();
-  cache.unshift(egreso);
-  setCache(cache);
-  render();
+  if (egresoMonto !== null) {
+    const egreso = await sbInsert({
+      fecha: new Date().toISOString(),
+      tipo: "egreso",
+      horas: null,
+      monto: egresoMonto,
+      desc: `Compra ${cantidad} ${ticker}`,
+    });
+    const cache = getCache();
+    cache.unshift(egreso);
+    setCache(cache);
+    render();
+  }
 
   inputTicker.value = "";
   inputCantidad.value = "";
   inputPrecio.value = "";
+  if (inputRatio) inputRatio.value = "";
   inputFecha.value = hoyISO();
   $("preview-total").textContent = "";
+  precioAutocompletado = false;
+  if ($("precio-hint")) $("precio-hint").textContent = "";
 }
 
 async function agregarHoras(horas, desc) {
@@ -742,15 +911,36 @@ const invScreen = $("inversiones-screen");
 const tdScreen = $("ticker-detail-screen");
 let inversionesCache = [];
 let preciosActualesCache = {}; // {ticker: {precio_ars, precio_usd}}
+let preciosActualizados = null; // Date del último refresco de precios en vivo
 let currentDetailTicker = null;
 
 // Ratio CEDEAR:subyacente (ej SPY: 20 CEDEARs = 1 SPY real)
 // precio_usd almacenado y de Yahoo es del subyacente, hay que dividir para convertir a unidades del usuario.
-const RATIOS = {
+// Los ratios conocidos vienen precargados; los que el usuario ingresa se guardan en localStorage
+// (por ticker), así no vuelve a preguntar por un CEDEAR que ya cargó antes.
+const RATIOS_SEED = {
   SPY: 20, BRKB: 22, XLF: 2, XLE: 2, GGAL: 10,
   CEPU: 10, PAMPX: 25, YPF: 1, AAPL: 10, KO: 10, AMZN: 20, MSFT: 20,
 };
-const ratioDe = (t) => RATIOS[t] || 1;
+const KEY_RATIOS = "sueldo.ratios";
+function getRatiosStore() {
+  try { return JSON.parse(localStorage.getItem(KEY_RATIOS) || "{}"); } catch { return {}; }
+}
+function getRatios() {
+  return { ...RATIOS_SEED, ...getRatiosStore() };
+}
+// Ratio conocido para un ticker, o null si nunca se cargó.
+function ratioConocido(ticker) {
+  const r = Number(getRatios()[ticker]);
+  return r > 0 ? r : null;
+}
+function setRatio(ticker, ratio) {
+  const store = getRatiosStore();
+  store[ticker] = ratio;
+  localStorage.setItem(KEY_RATIOS, JSON.stringify(store));
+}
+// Ratio efectivo para el cálculo: 1 salvo que sea un CEDEAR con ratio conocido.
+const ratioDe = (t) => ratioConocido(t) || 1;
 
 async function sbFetchInversiones() {
   try {
@@ -797,36 +987,90 @@ async function sbDeleteInversion(id) {
   if (!res.ok) throw new Error(`delete ${res.status}`);
 }
 
+// Normaliza el tipo (compat: filas viejas sin tipo asumen cedear salvo ticker USD).
+function tipoDe(r) {
+  if (r.tipo_activo === "usd" || r.tipo_activo === "accion_us" || r.tipo_activo === "cedear") return r.tipo_activo;
+  return r.ticker === "USD" ? "usd" : "cedear";
+}
+
+// Agrega los lotes en posiciones (por ticker + tipo) y calcula el costo invertido en USD.
+// - CEDEAR: costo USD = ARS pagado / MEP del día. El valor de mercado usa el ratio.
+// - Acción EEUU: costo USD = cantidad × precio USD. Ratio 1.
+// - USD cash: el costo (y el valor) en USD es la cantidad de dólares.
 function aggregatePositions(rows) {
   const map = new Map();
   for (const r of rows) {
-    const ticker = r.ticker;
+    const tipo = tipoDe(r);
+    const ratio = tipo === "cedear" ? ratioDe(r.ticker) : 1;
+    const key = `${r.ticker}|${tipo}`;
     const cant = Number(r.cantidad);
     const pArs = r.precio_ars != null ? Number(r.precio_ars) : null;
     const pUsd = r.precio_usd != null ? Number(r.precio_usd) : null;
-    if (!map.has(ticker)) {
-      map.set(ticker, { ticker, tipo_activo: r.tipo_activo, cantidad: 0, costoArs: 0, costoUsd: 0, cantConPrecio: 0 });
+    const mep = r.mep != null ? Number(r.mep) : null;
+
+    if (!map.has(key)) {
+      map.set(key, {
+        ticker: r.ticker, tipo_activo: tipo, ratio,
+        cantidad: 0, invertidoUsd: 0, invertidoArs: 0,
+        cantConDato: 0, // unidades (CEDEARs/acciones) con costo USD conocido
+      });
     }
-    const p = map.get(ticker);
+    const p = map.get(key);
     p.cantidad += cant;
-    // Costo solo para compras (cantidad > 0) con precio
-    if (cant > 0 && pArs !== null) p.costoArs += cant * pArs;
-    if (cant > 0 && pUsd !== null) p.costoUsd += cant * pUsd;
-    if (cant > 0 && (pArs !== null || pUsd !== null)) p.cantConPrecio += cant;
+    if (cant <= 0) continue; // ventas no suman al costo
+
+    if (tipo === "usd") {
+      p.invertidoUsd += cant;                       // dólares
+      if (pArs !== null) p.invertidoArs += cant * pArs;
+      p.cantConDato += cant;
+    } else if (tipo === "accion_us") {
+      if (pUsd !== null) { p.invertidoUsd += cant * pUsd; p.cantConDato += cant; }
+    } else { // cedear
+      if (pArs !== null) p.invertidoArs += cant * pArs;
+      if (pArs !== null && mep) {
+        p.invertidoUsd += (cant * pArs) / mep;      // dolarizado al MEP
+        p.cantConDato += cant;
+      } else if (pUsd !== null) {
+        // Compat: lotes viejos con precio_usd del subyacente.
+        p.invertidoUsd += (cant / ratio) * pUsd;
+        p.cantConDato += cant;
+      }
+    }
   }
-  return [...map.values()].map(p => ({
-    ...p,
-    promArs: p.cantConPrecio > 0 ? p.costoArs / p.cantConPrecio : null,
-    promUsd: p.cantConPrecio > 0 ? p.costoUsd / p.cantConPrecio : null,
-  }));
+  return [...map.values()].map(p => {
+    // Precio USD promedio por acción/subyacente (para el % de variación).
+    let promUsd = null;
+    if (p.cantConDato > 0 && p.invertidoUsd > 0) {
+      const unidadesSubyacente = p.tipo_activo === "cedear" ? p.cantConDato / p.ratio : p.cantConDato;
+      if (unidadesSubyacente > 0) promUsd = p.invertidoUsd / unidadesSubyacente;
+    }
+    return { ...p, promUsd };
+  });
 }
 
 async function openInversiones() {
   appScreen.classList.add("hidden");
   invScreen.classList.remove("hidden");
   invScreen.scrollTop = 0;
+  // Render rápido con lo que haya en cache (Supabase), después actualiza en vivo.
   await Promise.all([sbFetchInversiones(), sbFetchPreciosActuales()]);
   renderInversiones();
+  await refreshPreciosLive();
+}
+
+// Recalcula online el valor actual contra Yahoo Finance (API pública).
+async function refreshPreciosLive() {
+  const btn = $("btn-inv-refresh");
+  if (btn) { btn.disabled = true; btn.classList.add("spin"); }
+  try {
+    const tickers = [...new Set(inversionesCache.map(r => r.ticker))];
+    await fetchPreciosActualesLive(tickers);
+    renderInversiones();
+  } catch (e) {
+    console.warn("precios en vivo:", e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove("spin"); }
+  }
 }
 
 function closeInversiones() {
@@ -836,7 +1080,8 @@ function closeInversiones() {
 
 function renderInversiones() {
   const positions = aggregatePositions(inversionesCache).filter(p => Math.abs(p.cantidad) > 0.0001);
-  let totalUsd = 0;
+  let totalUsd = 0;        // valor de mercado hoy
+  let totalInvertidoUsd = 0; // costo (lo que puse)
 
   // Render positions
   const ul = $("inv-positions");
@@ -844,47 +1089,57 @@ function renderInversiones() {
   if (!positions.length) {
     ul.innerHTML = '<li style="justify-content:center;color:var(--muted)">Sin posiciones</li>';
   } else {
-    // Orden: CEDEARs primero, USD al final
+    // Orden: CEDEARs y acciones primero, USD al final
     positions.sort((a, b) => (a.tipo_activo === "usd") - (b.tipo_activo === "usd") || a.ticker.localeCompare(b.ticker));
     for (const p of positions) {
       const curr = preciosActualesCache[p.ticker];
       const currUsd = curr?.precio_usd ? Number(curr.precio_usd) : null;
-      const currArs = curr?.precio_ars ? Number(curr.precio_ars) : null;
+      const ratio = p.ratio || 1;
 
-      // Valor actual estimado en USD (aplicando ratio CEDEAR → subyacente)
-      const ratio = ratioDe(p.ticker);
+      // Costo invertido en USD proporcional a lo que queda en cartera.
+      // (invertidoUsd es sobre las unidades con dato; si vendiste parte, prorrateo.)
+      let invertidoUsd = p.invertidoUsd;
+      if (p.tipo_activo !== "usd" && p.cantConDato > 0 && p.cantidad < p.cantConDato) {
+        invertidoUsd = p.invertidoUsd * (p.cantidad / p.cantConDato);
+      }
+      totalInvertidoUsd += invertidoUsd;
+
+      // Valor actual estimado en USD (aplicando ratio CEDEAR → subyacente).
       let valorUsd = null;
       if (p.tipo_activo === "usd") {
         valorUsd = p.cantidad; // 1 USD = 1 USD
       } else if (currUsd !== null) {
         valorUsd = (p.cantidad / ratio) * currUsd;
-      } else if (p.promUsd !== null) {
-        valorUsd = (p.cantidad / ratio) * p.promUsd; // fallback: a costo
+      } else {
+        valorUsd = invertidoUsd; // sin precio actual: se muestra a costo
       }
       if (valorUsd !== null) totalUsd += valorUsd;
 
-      // P/L %
+      // P/L %: valor hoy vs costo invertido.
       let pl = null;
-      if (p.tipo_activo === "cedear" && currUsd !== null && p.promUsd !== null && p.promUsd > 0) {
-        pl = ((currUsd - p.promUsd) / p.promUsd) * 100;
+      if (p.tipo_activo !== "usd" && invertidoUsd > 0 && valorUsd !== null && currUsd !== null) {
+        pl = ((valorUsd - invertidoUsd) / invertidoUsd) * 100;
       }
 
       const li = document.createElement("li");
-      const tickerLabel = p.tipo_activo === "usd" ? "USD cash" : p.ticker;
+      const tipoLabel = p.tipo_activo === "usd" ? "USD cash"
+        : p.tipo_activo === "accion_us" ? `${p.ticker} · acción EEUU`
+        : p.ticker;
       const ratioLabel = p.tipo_activo === "cedear" && ratio > 1 ? ` (${ratio}:1)` : "";
       const cantLabel = p.tipo_activo === "usd"
         ? `${Math.round(p.cantidad).toLocaleString("es-AR")} USD`
         : `${p.cantidad} unid`;
       const valorLabel = valorUsd !== null ? `USD ${Math.round(valorUsd).toLocaleString("es-AR")}` : "—";
       const plLabel = pl !== null ? ` ${pl >= 0 ? "+" : ""}${pl.toFixed(1)}%` : "";
-      const costSubyacente = p.promUsd !== null ? `compra USD ${p.promUsd.toFixed(2)}/u subyacente` : "";
-      const currSubyacente = currUsd !== null ? `hoy USD ${currUsd.toFixed(2)}/u subyacente` : "";
+      const invLabel = p.tipo_activo !== "usd" && invertidoUsd > 0
+        ? `invertido USD ${Math.round(invertidoUsd).toLocaleString("es-AR")}` : "";
+      const currSubyacente = currUsd !== null && p.tipo_activo !== "usd" ? `hoy USD ${currUsd.toFixed(2)}/u` : "";
       li.style.cursor = "pointer";
       li.dataset.ticker = p.ticker;
       li.innerHTML = `
         <div class="mov-info">
-          <div class="mov-desc"><strong>${tickerLabel}</strong>${ratioLabel} · ${cantLabel} <span style="color:var(--muted);font-weight:400">›</span></div>
-          <div class="mov-meta">${costSubyacente}${costSubyacente && currSubyacente ? " · " : ""}${currSubyacente}</div>
+          <div class="mov-desc"><strong>${tipoLabel}</strong>${ratioLabel} · ${cantLabel} <span style="color:var(--muted);font-weight:400">›</span></div>
+          <div class="mov-meta">${invLabel}${invLabel && currSubyacente ? " · " : ""}${currSubyacente}</div>
         </div>
         <div class="mov-monto ${pl !== null && pl < 0 ? "neg" : "pos"}">${valorLabel}<br><small>${plLabel || ""}</small></div>
       `;
@@ -894,6 +1149,15 @@ function renderInversiones() {
   }
 
   $("inv-total").textContent = `USD ${Math.round(totalUsd).toLocaleString("es-AR")}`;
+  const plTotal = totalInvertidoUsd > 0 ? ((totalUsd - totalInvertidoUsd) / totalInvertidoUsd) * 100 : null;
+  const plTxt = plTotal !== null ? ` · ${plTotal >= 0 ? "+" : ""}${plTotal.toFixed(1)}%` : "";
+  $("inv-invertido").textContent = `Invertido USD ${Math.round(totalInvertidoUsd).toLocaleString("es-AR")}${plTxt}`;
+  const updatedEl = $("inv-updated");
+  if (updatedEl) {
+    updatedEl.textContent = preciosActualizados
+      ? `↻ en vivo · ${preciosActualizados.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}`
+      : "";
+  }
 
   // Render transactions
   const txUl = $("inv-transactions");
@@ -931,23 +1195,57 @@ function renderInversiones() {
 }
 
 async function agregarInversion() {
-  const ticker = prompt("Ticker (ej SPY, BRKB, USD):");
-  if (!ticker) return;
-  const tickerUp = ticker.trim().toUpperCase();
-  const tipo = tickerUp === "USD" ? "usd" : "cedear";
+  const tipoStr = prompt("Tipo: 1 = CEDEAR, 2 = Acción EEUU (USD), 3 = Dólar cash", "1");
+  if (tipoStr === null) return;
+  const tipo = tipoStr.trim() === "3" ? "usd" : tipoStr.trim() === "2" ? "accion_us" : "cedear";
+
+  let tickerUp = "USD";
+  if (tipo !== "usd") {
+    const ticker = prompt("Ticker (ej SPY, BRKB, AAPL):");
+    if (!ticker) return;
+    tickerUp = ticker.trim().toUpperCase();
+  }
+
   const cantStr = prompt("Cantidad (positivo = compra, negativo = venta):");
   if (!cantStr) return;
   const cantidad = Number(cantStr);
   if (!cantidad) { alert("Cantidad inválida"); return; }
-  const pArsStr = prompt(tipo === "usd" ? "Tipo de cambio (ARS por USD):" : "Precio por unidad en ARS:");
-  const precio_ars = pArsStr ? Number(pArsStr) : null;
-  const pUsdStr = prompt(tipo === "usd" ? "Dejar en 1" : "Precio por unidad en USD (opcional):", tipo === "usd" ? "1" : "");
-  const precio_usd = pUsdStr ? Number(pUsdStr) : null;
+
+  // Ratio para CEDEARs nuevos.
+  let ratio = null;
+  if (tipo === "cedear" && cantidad > 0) {
+    ratio = ratioConocido(tickerUp);
+    if (!ratio) {
+      const rStr = prompt(`¿Cuántos CEDEARs equivalen a 1 acción real de ${tickerUp}? (ej. 20)`);
+      if (rStr === null) return;
+      ratio = Number(rStr);
+      if (!ratio || ratio <= 0) { alert("Ratio inválido"); return; }
+    }
+    setRatio(tickerUp, ratio);
+  }
+
+  let precio_ars = null, precio_usd = null, mep = null;
   const fechaStr = prompt("Fecha (YYYY-MM-DD), vacío = hoy:", hoyISO());
-  const fecha = fechaStr ? `${fechaStr} 12:00:00-03:00` : new Date().toISOString();
+  const fechaDia = fechaStr && fechaStr.trim() ? fechaStr.trim() : hoyISO();
+
+  if (tipo === "accion_us") {
+    const pUsdStr = prompt("Precio por unidad en USD:");
+    precio_usd = pUsdStr ? Number(pUsdStr) : null;
+  } else if (tipo === "usd") {
+    const pArsStr = prompt("Tipo de cambio (ARS por USD):");
+    precio_ars = pArsStr ? Number(pArsStr) : null;
+    precio_usd = 1;
+    mep = precio_ars;
+  } else { // cedear
+    const pArsStr = prompt("Precio por unidad en ARS:");
+    precio_ars = pArsStr ? Number(pArsStr) : null;
+    if (cantidad > 0 && precio_ars) mep = await fetchMepForDate(fechaDia);
+  }
+
+  const fecha = `${fechaDia} 12:00:00-03:00`;
   const notas = prompt("Notas (opcional):", "") || null;
   try {
-    await sbInsertInversion({ ticker: tickerUp, tipo_activo: tipo, cantidad, precio_ars, precio_usd, fecha, notas });
+    await sbInsertInversion({ ticker: tickerUp, tipo_activo: tipo, cantidad, precio_ars, precio_usd, mep, fecha, notas });
     await sbFetchInversiones();
     renderInversiones();
   } catch (e) {
@@ -1035,6 +1333,8 @@ function renderTickerDetail() {
   $("td-ticker").textContent = ticker;
 
   // Stats
+  const tipo = tipoDe(items[0] || {});
+  const tipoTxt = tipo === "usd" ? "Dólar cash" : tipo === "accion_us" ? "Acción EEUU" : "CEDEAR";
   const totalCant = items.reduce((s, r) => s + Number(r.cantidad), 0);
   const compras = items.filter(r => Number(r.cantidad) > 0);
   const costoArsTotal = compras.reduce((s, r) => s + (r.precio_ars ? Number(r.cantidad) * Number(r.precio_ars) : 0), 0);
@@ -1042,14 +1342,19 @@ function renderTickerDetail() {
     if (r.precio_ars && r.mep) return s + (Number(r.cantidad) * Number(r.precio_ars) / Number(r.mep));
     return s;
   }, 0);
+  // Costo en USD para acciones de EEUU (precio en dólares directo).
+  const usdDirectoTotal = compras.reduce((s, r) => s + (r.precio_usd ? Number(r.cantidad) * Number(r.precio_usd) : 0), 0);
   const cantConArs = compras.filter(r => r.precio_ars).reduce((s, r) => s + Number(r.cantidad), 0);
   const promArs = cantConArs > 0 ? costoArsTotal / cantConArs : 0;
 
   const stats = [];
+  stats.push(tipoTxt);
+  if (tipo === "cedear") { const rat = ratioDe(ticker); if (rat > 1) stats.push(`${rat}:1`); }
   stats.push(`${totalCant} unid`);
   if (promArs) stats.push(`CPC ${fmt(promArs)}`);
   if (costoArsTotal) stats.push(`${fmt(costoArsTotal)}`);
   if (usdMepTotal) stats.push(`USD ${Math.round(usdMepTotal).toLocaleString("es-AR")} @ MEP`);
+  if (tipo === "accion_us" && usdDirectoTotal) stats.push(`USD ${usdDirectoTotal.toFixed(2)} invertido`);
   $("td-stats").textContent = stats.join(" · ");
 
   const ul = $("td-list");
@@ -1060,10 +1365,16 @@ function renderTickerDetail() {
   }
   for (const r of items) {
     const cant = Number(r.cantidad);
+    const rtipo = tipoDe(r);
     const fecha = new Date(r.fecha).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
-    const precioArs = r.precio_ars ? fmt(Number(r.precio_ars)) : "sin precio ARS";
-    const total = r.precio_ars ? fmt(Math.abs(cant) * Number(r.precio_ars)) : "";
-    const usdMep = r.precio_ars && r.mep
+    // Acción EEUU: precio en USD. CEDEAR / dólar: precio en ARS.
+    const precioArs = rtipo === "accion_us"
+      ? (r.precio_usd ? `USD ${Number(r.precio_usd).toFixed(2)}` : "sin precio USD")
+      : (r.precio_ars ? fmt(Number(r.precio_ars)) : "sin precio ARS");
+    const total = rtipo === "accion_us"
+      ? (r.precio_usd ? `USD ${(Math.abs(cant) * Number(r.precio_usd)).toFixed(2)}` : "")
+      : (r.precio_ars ? fmt(Math.abs(cant) * Number(r.precio_ars)) : "");
+    const usdMep = rtipo !== "accion_us" && r.precio_ars && r.mep
       ? `USD ${(Math.abs(cant) * Number(r.precio_ars) / Number(r.mep)).toFixed(2)} @ MEP ${Math.round(Number(r.mep))}`
       : "";
     const signo = cant >= 0 ? "+" : "";
@@ -1148,6 +1459,7 @@ async function borrarLote(id) {
 $("btn-open-inv").addEventListener("click", openInversiones);
 $("btn-inv-back").addEventListener("click", closeInversiones);
 $("btn-inv-add").addEventListener("click", agregarInversion);
+$("btn-inv-refresh").addEventListener("click", refreshPreciosLive);
 $("btn-inv-backfill").addEventListener("click", backfillPrecios);
 $("btn-td-back").addEventListener("click", closeTickerDetail);
 
