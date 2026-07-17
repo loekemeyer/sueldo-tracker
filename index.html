@@ -39,7 +39,9 @@
       <div class="label">Valor hoy (estimado)</div>
       <div id="inv-total" class="saldo">USD 0</div>
       <div id="inv-invertido" class="label" style="text-transform:none;margin-top:4px">Invertido USD 0</div>
+      <div id="inv-updated" class="label" style="text-transform:none;font-size:11px;opacity:.7;margin-top:2px"></div>
     </div>
+    <button id="btn-inv-refresh" class="icon-btn" aria-label="Actualizar precios">↻</button>
     <button id="btn-inv-add" class="icon-btn" aria-label="Agregar">+</button>
   </header>
   <section class="list-section">
@@ -168,6 +170,7 @@
           <label for="input-ratio">Ratio — CEDEARs por 1 acción real</label>
           <input type="number" id="input-ratio" step="1" min="1" placeholder="ej. 20 (SPY)" inputmode="numeric">
         </div>
+        <div id="precio-hint" class="hint" style="text-align:left;margin:0"></div>
         <div id="preview-total" class="preview-total"></div>
       </div>
       <button type="submit" class="primary">Agregar</button>
