@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.19";
+const APP_VERSION = "1.20";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -448,6 +448,8 @@ function setCompraTipo(ct) {
       : ct === "accion_us" ? "Precio USD / unidad"
       : "Precio ARS / unidad";
   }
+  // Pesos = teclado numérico (sin coma); USD puede tener decimales.
+  if (inputPrecio) inputPrecio.inputMode = ct === "accion_us" ? "decimal" : "numeric";
   if (ct === "cedear") refreshRatioField(); else setRatioHint("");
   // Al cambiar de tipo, el precio cambia de moneda: si lo había puesto la sugerencia,
   // lo descarto y vuelvo a sugerir. Un precio cargado a mano se respeta.
@@ -1005,13 +1007,13 @@ function renderModalFields(defs, focusFirst) {
       ).join("");
       control = `<select id="${id}">${opts}</select>`;
     } else {
-      // "pesos" y "number" van como texto con teclado decimal (así aceptan puntos de miles).
-      const numeric = f.type === "number" || f.type === "pesos";
+      // "pesos" (importes en $) usan teclado numérico sin coma; "number" (USD/cantidad) permiten decimales.
       const inputType = f.type === "date" ? "date" : "text";
+      const inputmode = f.type === "pesos" ? "numeric" : f.type === "number" ? "decimal" : null;
       const attrs = [
         `id="${id}"`, `type="${inputType}"`,
         f.placeholder ? `placeholder="${escapeHtml(f.placeholder)}"` : "",
-        numeric ? 'inputmode="decimal" autocomplete="off"' : "",
+        inputmode ? `inputmode="${inputmode}" autocomplete="off"` : "",
       ].filter(Boolean).join(" ");
       control = `<input ${attrs} value="${f.value != null && f.value !== "" ? escapeHtml(String(f.value)) : ""}">`;
     }
