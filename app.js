@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.13";
+const APP_VERSION = "1.14";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 

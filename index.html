@@ -38,12 +38,14 @@
     <div style="flex:1">
       <div class="label">Valor hoy (estimado)</div>
       <div id="inv-total" class="saldo">USD 0</div>
-      <div id="inv-invertido" class="label" style="text-transform:none;margin-top:4px">Invertido USD 0</div>
-      <div id="inv-updated" class="label" style="text-transform:none;font-size:11px;opacity:.7;margin-top:2px"></div>
     </div>
     <button id="btn-inv-refresh" class="icon-btn" aria-label="Actualizar precios">↻</button>
     <button id="btn-inv-add" class="icon-btn" aria-label="Agregar">+</button>
   </header>
+  <div class="summary-bar">
+    <span id="inv-invertido">Invertido USD 0</span>
+    <span id="inv-updated"></span>
+  </div>
   <section class="list-section">
     <div class="list-header">
       <h2>Posiciones</h2>
