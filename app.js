@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.15";
+const APP_VERSION = "1.16";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -117,6 +117,24 @@ async function sbDelete(id) {
     headers: sbHeaders,
   });
   if (!res.ok) throw new Error(`delete ${res.status}`);
+}
+
+async function sbUpdate(id, mov) {
+  const body = {
+    fecha: mov.fecha,
+    tipo: mov.tipo,
+    horas: mov.horas,
+    monto: mov.monto,
+    descripcion: mov.desc,
+  };
+  const res = await fetch(`${SB_URL}/rest/v1/movimientos?id=eq.${id}`, {
+    method: "PATCH",
+    headers: { ...sbHeaders, Prefer: "return=representation" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`update ${res.status}: ${await res.text()}`);
+  const [updated] = await res.json();
+  return sbRowToMov(updated);
 }
 
 async function sbLastHorasFecha() {
@@ -858,11 +876,15 @@ function render() {
         <div class="mov-meta">${fecha} · ${m.tipo}${extra}</div>
       </div>
       <div class="mov-monto ${cls}">${signo}${fmt(m.monto)}</div>
-      <button class="mov-delete" data-id="${m.id}" aria-label="Borrar">✕</button>
+      <button class="mov-delete" data-id="${m.id}" data-action="edit" aria-label="Editar">✎</button>
+      <button class="mov-delete" data-id="${m.id}" data-action="delete" aria-label="Borrar">✕</button>
     `;
     ul.appendChild(li);
   }
-  ul.querySelectorAll(".mov-delete").forEach(b => {
+  ul.querySelectorAll("button[data-action=edit]").forEach(b => {
+    b.addEventListener("click", () => editarMovimiento(Number(b.dataset.id)));
+  });
+  ul.querySelectorAll("button[data-action=delete]").forEach(b => {
     b.addEventListener("click", async () => {
       if (!confirm("¿Borrar este movimiento?")) return;
       const id = Number(b.dataset.id);
@@ -875,6 +897,53 @@ function render() {
       }
     });
   });
+}
+
+// Editar un movimiento ya cargado (ingreso / egreso / horas).
+async function editarMovimiento(id) {
+  const m = getCache().find(x => x.id === id);
+  if (!m) return;
+
+  const desc = prompt("Descripción:", m.desc || "");
+  if (desc === null) return;
+
+  const fechaActual = new Date(m.fecha).toISOString().slice(0, 10);
+  const fechaStr = prompt("Fecha (YYYY-MM-DD):", fechaActual);
+  if (fechaStr === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaStr.trim())) { alert("Fecha inválida (formato YYYY-MM-DD)"); return; }
+
+  let horas = m.horas;
+  let monto = m.monto;
+  if (m.tipo === "horas") {
+    const hStr = prompt("Horas trabajadas:", m.horas != null ? String(m.horas) : "");
+    if (hStr === null) return;
+    horas = Number(hStr);
+    if (!horas || horas <= 0) { alert("Horas inválidas"); return; }
+    monto = horas * getValorHoraForDate(new Date(fechaStr.trim() + "T12:00:00-03:00"));
+    if (!confirm(`${horas}hs × valor hora = ${fmt(monto)}. ¿Guardar?`)) return;
+  } else {
+    const mStr = prompt("Monto:", String(m.monto));
+    if (mStr === null) return;
+    monto = Number(mStr);
+    if (!monto || monto <= 0) { alert("Monto inválido"); return; }
+  }
+
+  const fechaIso = `${fechaStr.trim()} 12:00:00-03:00`;
+  try {
+    const updated = await sbUpdate(id, {
+      fecha: fechaIso,
+      tipo: m.tipo,
+      horas,
+      monto,
+      desc: desc.trim() || m.tipo,
+    });
+    const nuevo = getCache().map(x => (x.id === id ? updated : x));
+    nuevo.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+    setCache(nuevo);
+    render();
+  } catch (e) {
+    alert("No se pudo editar: " + e.message);
+  }
 }
 
 function escapeHtml(s) {
@@ -1261,11 +1330,15 @@ function renderInversiones() {
           <div class="mov-desc">${r.ticker} ${signo}${cant}</div>
           <div class="mov-meta">${fecha} · ${precio} ${r.notas ? "· " + escapeHtml(r.notas) : ""}</div>
         </div>
-        <button class="mov-delete" data-id="${r.id}" aria-label="Borrar">✕</button>
+        <button class="mov-delete" data-id="${r.id}" data-action="edit" aria-label="Editar">✎</button>
+        <button class="mov-delete" data-id="${r.id}" data-action="delete" aria-label="Borrar">✕</button>
       `;
       txUl.appendChild(li);
     }
-    txUl.querySelectorAll(".mov-delete").forEach(b => {
+    txUl.querySelectorAll("button[data-action=edit]").forEach(b => {
+      b.addEventListener("click", () => editarLote(Number(b.dataset.id), renderInversiones));
+    });
+    txUl.querySelectorAll("button[data-action=delete]").forEach(b => {
       b.addEventListener("click", async () => {
         if (!confirm("¿Borrar esta transacción?")) return;
         try {
@@ -1518,7 +1591,7 @@ function renderTickerDetail() {
   });
 }
 
-async function editarLote(id) {
+async function editarLote(id, onDone = renderTickerDetail) {
   const r = inversionesCache.find(x => x.id === id);
   if (!r) return;
 
@@ -1559,7 +1632,7 @@ async function editarLote(id) {
       notas: notas.trim() || null,
     });
     await sbFetchInversiones();
-    renderTickerDetail();
+    onDone();
   } catch (e) {
     alert("Error: " + e.message);
   }
