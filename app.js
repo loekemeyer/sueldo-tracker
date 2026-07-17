@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.14";
+const APP_VERSION = "1.15";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -409,7 +409,7 @@ function setCompraTipo(ct) {
       : ct === "accion_us" ? "Precio USD / unidad"
       : "Precio ARS / unidad";
   }
-  if (ct === "cedear") autofillRatio();
+  if (ct === "cedear") refreshRatioField(); else setRatioHint("");
   // Al cambiar de tipo, el precio cambia de moneda: si lo había puesto la sugerencia,
   // lo descarto y vuelvo a sugerir. Un precio cargado a mano se respeta.
   if (precioAutocompletado) { inputPrecio.value = ""; precioAutocompletado = false; }
@@ -418,20 +418,69 @@ function setCompraTipo(ct) {
 }
 compraTipoTabs.forEach(b => b.addEventListener("click", () => setCompraTipo(b.dataset.ct)));
 
-// Autocompleta el ratio si el ticker ya es conocido (no vuelve a preguntar).
-function autofillRatio() {
-  if (!inputRatio) return;
-  const t = inputTicker.value.trim().toUpperCase();
-  const r = t ? ratioConocido(t) : null;
-  if (r) {
-    inputRatio.value = r;
-    inputRatio.placeholder = `${r} (conocido)`;
-  } else {
-    inputRatio.value = "";
-    inputRatio.placeholder = "ej. 20 (SPY)";
-  }
+// --- Ratio automático: aparece apenas se escribe el ticker ---
+// Si ya está guardado se muestra al instante; si es nuevo se estima en vivo con
+// los precios (para que el usuario lo confirme antes de cargar).
+let ratioAuto = false;      // true si el valor actual del campo lo puso el autocompletado
+let ratioDebounce = null;
+let ratioToken = 0;
+
+function setRatioHint(txt) {
+  const h = $("ratio-hint");
+  if (h) h.textContent = txt || "";
 }
-if (inputTicker) inputTicker.addEventListener("input", () => { if (compraTipo === "cedear") autofillRatio(); });
+
+function refreshRatioField() {
+  if (!inputRatio || compraTipo !== "cedear") return;
+  const t = inputTicker.value.trim().toUpperCase();
+
+  // Respeta un ratio cargado a mano.
+  if (!ratioAuto && inputRatio.value && Number(inputRatio.value) > 0) return;
+
+  if (!t) {
+    if (ratioAuto) inputRatio.value = "";
+    inputRatio.placeholder = "ej. 20 (SPY)";
+    setRatioHint("");
+    return;
+  }
+
+  const known = ratioConocido(t);
+  if (known) {
+    if (ratioDebounce) { clearTimeout(ratioDebounce); ratioDebounce = null; }
+    inputRatio.value = known;
+    ratioAuto = true;
+    inputRatio.placeholder = `${known} (guardado)`;
+    setRatioHint(`✓ Ratio guardado: ${known} CEDEARs = 1 acción.`);
+    return;
+  }
+
+  // Ticker nuevo: estimar en vivo (con debounce para no pegarle a cada tecla).
+  inputRatio.value = "";
+  ratioAuto = true;
+  inputRatio.placeholder = "estimando…";
+  setRatioHint("Estimando ratio en vivo…");
+  if (ratioDebounce) clearTimeout(ratioDebounce);
+  const token = ++ratioToken;
+  ratioDebounce = setTimeout(async () => {
+    const raw = await estimarRatio(t);
+    // Ignora si el usuario cambió de ticker/tipo o escribió el ratio mientras tanto.
+    if (token !== ratioToken || compraTipo !== "cedear") return;
+    if (inputTicker.value.trim().toUpperCase() !== t) return;
+    if (!ratioAuto && inputRatio.value) return;
+    if (raw == null) {
+      inputRatio.placeholder = "ej. 20 — ingresalo";
+      setRatioHint("No pude estimar el ratio — ingresalo a mano.");
+      return;
+    }
+    const est = Math.max(1, Math.round(raw));
+    inputRatio.value = est;
+    ratioAuto = true;
+    setRatioHint(`Ratio estimado: ${est} CEDEARs = 1 acción. Confirmá o corregí.`);
+  }, 500);
+}
+if (inputTicker) inputTicker.addEventListener("input", refreshRatioField);
+// Si el usuario escribe el ratio a mano, deja de considerarse autocompletado.
+if (inputRatio) inputRatio.addEventListener("input", () => { ratioAuto = false; });
 
 function setTipo(t) {
   tipoActivo = t;
@@ -620,6 +669,35 @@ async function fetchPrecioActualUsd(ticker) {
   return null;
 }
 
+// Precio actual del CEDEAR en ARS (símbolo .BA en BYMA).
+async function fetchPrecioActualArs(ticker) {
+  if (!ticker || ticker === "USD") return null;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}.BA?interval=1d&range=5d`;
+  const data = await yahooFetch(url);
+  const result = data?.chart?.result?.[0];
+  const meta = result?.meta;
+  if (meta?.regularMarketPrice != null) return Number(meta.regularMarketPrice);
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  for (let i = closes.length - 1; i >= 0; i--) {
+    if (closes[i] != null) return Number(closes[i]);
+  }
+  return null;
+}
+
+// Estima el ratio CEDEAR:acción con precios en vivo.
+// El precio del CEDEAR en ARS = precio_subyacente_USD × MEP / ratio, así que:
+//   ratio ≈ precio_subyacente_USD × MEP / precio_CEDEAR_ARS
+async function estimarRatio(ticker) {
+  const [ars, usd, mep] = await Promise.all([
+    fetchPrecioActualArs(ticker),
+    fetchPrecioActualUsd(ticker),
+    fetchMepForDate(hoyISO()),
+  ]);
+  if (!ars || ars <= 0 || !usd || usd <= 0 || !mep || mep <= 0) return null;
+  const raw = (usd * mep) / ars;
+  return isFinite(raw) && raw > 0 ? raw : null;
+}
+
 // Refresca en vivo el precio actual (USD) de todos los tickers de la cartera.
 async function fetchPreciosActualesLive(tickers) {
   const uniq = [...new Set(tickers.filter(t => t && t !== "USD"))];
@@ -724,7 +802,9 @@ async function handleCompraSubmit() {
   inputFecha.value = hoyISO();
   $("preview-total").textContent = "";
   precioAutocompletado = false;
+  ratioAuto = false;
   if ($("precio-hint")) $("precio-hint").textContent = "";
+  setRatioHint("");
 }
 
 async function agregarHoras(horas, desc) {
@@ -1134,12 +1214,16 @@ function renderInversiones() {
       const invLabel = p.tipo_activo !== "usd" && invertidoUsd > 0
         ? `invertido USD ${Math.round(invertidoUsd).toLocaleString("es-AR")}` : "";
       const currSubyacente = currUsd !== null && p.tipo_activo !== "usd" ? `hoy USD ${currUsd.toFixed(2)}/u` : "";
+      // Aviso si el CEDEAR no tiene ratio definido (se estaría valuando como acciones).
+      const ratioSinDefinir = p.tipo_activo === "cedear" && ratioConocido(p.ticker) === null;
+      const warnLabel = ratioSinDefinir ? `<span style="color:var(--warning)">⚠ ratio sin definir</span>` : "";
+      const metaPartes = [warnLabel, invLabel, currSubyacente].filter(Boolean).join(" · ");
       li.style.cursor = "pointer";
       li.dataset.ticker = p.ticker;
       li.innerHTML = `
         <div class="mov-info">
           <div class="mov-desc"><strong>${tipoLabel}</strong>${ratioLabel} · ${cantLabel} <span style="color:var(--muted);font-weight:400">›</span></div>
-          <div class="mov-meta">${invLabel}${invLabel && currSubyacente ? " · " : ""}${currSubyacente}</div>
+          <div class="mov-meta">${metaPartes}</div>
         </div>
         <div class="mov-monto ${pl !== null && pl < 0 ? "neg" : "pos"}">${valorLabel}<br><small>${plLabel || ""}</small></div>
       `;
@@ -1318,6 +1402,26 @@ async function openTickerDetail(ticker) {
   renderTickerDetail();
 }
 
+// Define o corrige el ratio de un CEDEAR. Pre-carga una estimación en vivo.
+async function editarRatio(ticker) {
+  const ratioEl = $("td-ratio");
+  let sugerido = ratioConocido(ticker);
+  if (!sugerido) {
+    if (ratioEl) ratioEl.innerHTML = "Estimando ratio en vivo…";
+    const raw = await estimarRatio(ticker);
+    if (raw) sugerido = Math.max(1, Math.round(raw));
+  }
+  const rStr = prompt(
+    `¿Cuántos CEDEARs equivalen a 1 acción real de ${ticker}?\n(ej. SPY = 20)`,
+    sugerido ? String(sugerido) : ""
+  );
+  if (rStr === null) { renderTickerDetail(); return; }
+  const r = Number(rStr);
+  if (!r || r <= 0) { alert("Ratio inválido"); renderTickerDetail(); return; }
+  setRatio(ticker, r);
+  renderTickerDetail();
+}
+
 function closeTickerDetail() {
   tdScreen.classList.add("hidden");
   invScreen.classList.remove("hidden");
@@ -1349,13 +1453,29 @@ function renderTickerDetail() {
 
   const stats = [];
   stats.push(tipoTxt);
-  if (tipo === "cedear") { const rat = ratioDe(ticker); if (rat > 1) stats.push(`${rat}:1`); }
   stats.push(`${totalCant} unid`);
   if (promArs) stats.push(`CPC ${fmt(promArs)}`);
   if (costoArsTotal) stats.push(`${fmt(costoArsTotal)}`);
   if (usdMepTotal) stats.push(`USD ${Math.round(usdMepTotal).toLocaleString("es-AR")} @ MEP`);
   if (tipo === "accion_us" && usdDirectoTotal) stats.push(`USD ${usdDirectoTotal.toFixed(2)} invertido`);
   $("td-stats").textContent = stats.join(" · ");
+
+  // Ratio editable (sólo CEDEAR). Si está sin definir, avisa que se valúa como acciones.
+  const ratioEl = $("td-ratio");
+  if (ratioEl) {
+    if (tipo === "cedear") {
+      ratioEl.classList.remove("hidden");
+      const known = ratioConocido(ticker);
+      ratioEl.innerHTML = known
+        ? `Ratio: <strong>${known}</strong> CEDEARs = 1 acción · <span style="color:var(--accent)">editar ✎</span>`
+        : `⚠ <span style="color:var(--warning)">Ratio sin definir</span> — se valúa como acciones · <span style="color:var(--accent)">definir ✎</span>`;
+      ratioEl.style.cursor = "pointer";
+      ratioEl.onclick = () => editarRatio(ticker);
+    } else {
+      ratioEl.classList.add("hidden");
+      ratioEl.onclick = null;
+    }
+  }
 
   const ul = $("td-list");
   ul.innerHTML = "";
