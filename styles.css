@@ -396,6 +396,18 @@ li:active { background: var(--surface-2); }
 .modal-header h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
 .modal-header .icon-btn { width: 38px; height: 38px; font-size: 15px; }
 #modal-fields { display: flex; flex-direction: column; gap: 14px; }
+#modal-fields select {
+  width: 100%;
+  background: var(--input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 13px 14px;
+  border-radius: var(--r-sm);
+  font-size: 16px;
+  font-family: inherit;
+  color-scheme: dark;
+}
+#modal-fields select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .modal-actions { display: flex; gap: 10px; margin-top: 22px; }
 .modal-actions button { flex: 1; }
 #modal-error { color: var(--neg); font-size: 13px; min-height: 0; text-align: center; }

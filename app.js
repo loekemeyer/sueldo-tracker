@@ -1,5 +1,5 @@
 // ==== Config ====
-const APP_VERSION = "1.17";
+const APP_VERSION = "1.18";
 const SB_URL = "https://ljwlanwmnuqgxftlirhh.supabase.co";
 const SB_KEY = "sb_publishable_niVre5BYps9QZVh4qq0UtQ_mMmCrIV0";
 
@@ -957,26 +957,27 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-// ==== Modal de formulario reutilizable (editar en pantalla) ====
+// ==== Modal de formulario reutilizable (editar / agregar en pantalla) ====
 let modalResolve = null;
 let modalFieldDefs = [];
 let modalValidate = null;
+let modalBuild = null;
 
-// Abre una hoja con inputs y resuelve con {key: valor} al guardar, o null si se cancela.
-// Cada field: { key, label, type: "text"|"number"|"date", value, placeholder, hint, step, min }
-function openFormModal({ title, fields, saveLabel = "Guardar", validate = null }) {
-  return new Promise(resolve => {
-    modalResolve = resolve;
-    modalFieldDefs = fields;
-    modalValidate = validate;
-    $("modal-title").textContent = title;
-    $("modal-save").textContent = saveLabel;
-    $("modal-error").textContent = "";
-
-    const cont = $("modal-fields");
-    cont.innerHTML = "";
-    for (const f of fields) {
-      const id = `modal-f-${f.key}`;
+// Dibuja los campos del modal. defs: array de fields.
+// field: { key, label, type: "text"|"number"|"date"|"select", value, placeholder, hint, step, min, options, reactive }
+function renderModalFields(defs, focusFirst) {
+  modalFieldDefs = defs;
+  const cont = $("modal-fields");
+  cont.innerHTML = "";
+  for (const f of defs) {
+    const id = `modal-f-${f.key}`;
+    let control;
+    if (f.type === "select") {
+      const opts = (f.options || []).map(o =>
+        `<option value="${escapeHtml(o.value)}"${String(o.value) === String(f.value) ? " selected" : ""}>${escapeHtml(o.label)}</option>`
+      ).join("");
+      control = `<select id="${id}">${opts}</select>`;
+    } else {
       const inputType = f.type === "date" ? "date" : f.type === "number" ? "number" : "text";
       const attrs = [
         `id="${id}"`, `type="${inputType}"`,
@@ -985,19 +986,41 @@ function openFormModal({ title, fields, saveLabel = "Guardar", validate = null }
         f.placeholder ? `placeholder="${escapeHtml(f.placeholder)}"` : "",
         inputType === "number" ? 'inputmode="decimal"' : "",
       ].filter(Boolean).join(" ");
-      const wrap = document.createElement("div");
-      wrap.className = "field";
-      wrap.innerHTML = `
-        <label for="${id}">${escapeHtml(f.label)}</label>
-        <input ${attrs} value="${f.value != null && f.value !== "" ? escapeHtml(String(f.value)) : ""}">
-        ${f.hint ? `<div class="hint" style="text-align:left;margin:2px 0 0">${escapeHtml(f.hint)}</div>` : ""}
-      `;
-      cont.appendChild(wrap);
+      control = `<input ${attrs} value="${f.value != null && f.value !== "" ? escapeHtml(String(f.value)) : ""}">`;
     }
-
-    $("modal").classList.remove("hidden");
-    const first = cont.querySelector("input");
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.innerHTML = `
+      <label for="${id}">${escapeHtml(f.label)}</label>
+      ${control}
+      ${f.hint ? `<div class="hint" style="text-align:left;margin:2px 0 0">${escapeHtml(f.hint)}</div>` : ""}
+    `;
+    cont.appendChild(wrap);
+    if (f.reactive) {
+      wrap.querySelector("select, input").addEventListener("change", () => {
+        renderModalFields(modalBuild(readModalValues()), false);
+      });
+    }
+  }
+  if (focusFirst) {
+    const first = cont.querySelector("input, select");
     if (first) setTimeout(() => first.focus(), 60);
+  }
+}
+
+// Abre una hoja con campos y resuelve con {key: valor} al guardar, o null si se cancela.
+// `fields` puede ser un array o una función (values) => array (para campos que
+// dependen de otros, ej. el tipo de activo reconfigura el resto).
+function openFormModal({ title, fields, saveLabel = "Guardar", validate = null }) {
+  return new Promise(resolve => {
+    modalResolve = resolve;
+    modalValidate = validate;
+    modalBuild = typeof fields === "function" ? fields : () => fields;
+    $("modal-title").textContent = title;
+    $("modal-save").textContent = saveLabel;
+    $("modal-error").textContent = "";
+    renderModalFields(modalBuild({}), true);
+    $("modal").classList.remove("hidden");
   });
 }
 
@@ -1437,57 +1460,82 @@ function renderInversiones() {
 }
 
 async function agregarInversion() {
-  const tipoStr = prompt("Tipo: 1 = CEDEAR, 2 = Acción EEUU (USD), 3 = Dólar cash", "1");
-  if (tipoStr === null) return;
-  const tipo = tipoStr.trim() === "3" ? "usd" : tipoStr.trim() === "2" ? "accion_us" : "cedear";
-
-  let tickerUp = "USD";
-  if (tipo !== "usd") {
-    const ticker = prompt("Ticker (ej SPY, BRKB, AAPL):");
-    if (!ticker) return;
-    tickerUp = ticker.trim().toUpperCase();
-  }
-
-  const cantStr = prompt("Cantidad (positivo = compra, negativo = venta):");
-  if (!cantStr) return;
-  const cantidad = Number(cantStr);
-  if (!cantidad) { alert("Cantidad inválida"); return; }
-
-  // Ratio para CEDEARs nuevos.
-  let ratio = null;
-  if (tipo === "cedear" && cantidad > 0) {
-    ratio = ratioConocido(tickerUp);
-    if (!ratio) {
-      const rStr = prompt(`¿Cuántos CEDEARs equivalen a 1 acción real de ${tickerUp}? (ej. 20)`);
-      if (rStr === null) return;
-      ratio = Number(rStr);
-      if (!ratio || ratio <= 0) { alert("Ratio inválido"); return; }
+  // Los campos dependen del tipo elegido (el select es reactivo).
+  const build = (v) => {
+    const tipo = v.tipo || "cedear";
+    const fs = [
+      { key: "tipo", label: "Tipo de activo", type: "select", value: tipo, reactive: true, options: [
+        { value: "cedear", label: "CEDEAR" },
+        { value: "accion_us", label: "Acción EEUU" },
+        { value: "usd", label: "Dólar" },
+      ] },
+    ];
+    if (tipo !== "usd") {
+      fs.push({ key: "ticker", label: "Ticker", type: "text", value: v.ticker ?? "", placeholder: "SPY, AAPL…" });
     }
-    setRatio(tickerUp, ratio);
-  }
+    fs.push({ key: "cantidad", label: "Cantidad (+ compra / − venta)", type: "number", step: "0.01", value: v.cantidad ?? "" });
+    if (tipo === "accion_us") {
+      fs.push({ key: "precio", label: "Precio USD / unidad", type: "number", step: "0.01", value: v.precio ?? "" });
+    } else if (tipo === "usd") {
+      fs.push({ key: "precio", label: "Tipo de cambio ARS / USD", type: "number", step: "0.01", value: v.precio ?? "" });
+    } else { // cedear
+      fs.push({ key: "precio", label: "Precio ARS / unidad", type: "number", step: "0.01", value: v.precio ?? "" });
+      fs.push({ key: "ratio", label: "Ratio (CEDEARs por acción)", type: "number", step: "1", min: 1, value: v.ratio ?? "", hint: "Vacío = lo estimo al guardar." });
+    }
+    fs.push({ key: "fecha", label: "Fecha", type: "date", value: v.fecha || hoyISO() });
+    fs.push({ key: "notas", label: "Notas (opcional)", type: "text", value: v.notas ?? "", placeholder: "Detalle" });
+    return fs;
+  };
 
+  const vals = await openFormModal({
+    title: "Agregar transacción",
+    saveLabel: "Agregar",
+    fields: build,
+    validate: v => {
+      const tipo = v.tipo || "cedear";
+      if (tipo !== "usd" && !(v.ticker || "").trim()) return "Falta el ticker.";
+      if (!v.cantidad || v.cantidad === 0) return "Cantidad inválida.";
+      if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) return "Fecha inválida.";
+      return null;
+    },
+  });
+  if (!vals) return;
+
+  const tipo = vals.tipo || "cedear";
+  const tickerUp = tipo === "usd" ? "USD" : vals.ticker.trim().toUpperCase();
+  const cantidad = vals.cantidad;
+  const fechaDia = vals.fecha;
   let precio_ars = null, precio_usd = null, mep = null;
-  const fechaStr = prompt("Fecha (YYYY-MM-DD), vacío = hoy:", hoyISO());
-  const fechaDia = fechaStr && fechaStr.trim() ? fechaStr.trim() : hoyISO();
 
   if (tipo === "accion_us") {
-    const pUsdStr = prompt("Precio por unidad en USD:");
-    precio_usd = pUsdStr ? Number(pUsdStr) : null;
+    precio_usd = vals.precio ?? null;
   } else if (tipo === "usd") {
-    const pArsStr = prompt("Tipo de cambio (ARS por USD):");
-    precio_ars = pArsStr ? Number(pArsStr) : null;
+    precio_ars = vals.precio ?? null;
     precio_usd = 1;
-    mep = precio_ars;
+    mep = vals.precio ?? null;
   } else { // cedear
-    const pArsStr = prompt("Precio por unidad en ARS:");
-    precio_ars = pArsStr ? Number(pArsStr) : null;
+    // Ratio: el que puso, o el conocido, o uno estimado en vivo.
+    let ratio = vals.ratio || ratioConocido(tickerUp);
+    if (!ratio && cantidad > 0) {
+      const raw = await estimarRatio(tickerUp);
+      if (raw) ratio = Math.max(1, Math.round(raw));
+    }
+    if (ratio) setRatio(tickerUp, ratio);
+    precio_ars = vals.precio ?? null;
     if (cantidad > 0 && precio_ars) mep = await fetchMepForDate(fechaDia);
   }
 
-  const fecha = `${fechaDia} 12:00:00-03:00`;
-  const notas = prompt("Notas (opcional):", "") || null;
   try {
-    await sbInsertInversion({ ticker: tickerUp, tipo_activo: tipo, cantidad, precio_ars, precio_usd, mep, fecha, notas });
+    await sbInsertInversion({
+      ticker: tickerUp,
+      tipo_activo: tipo,
+      cantidad,
+      precio_ars,
+      precio_usd,
+      mep,
+      fecha: `${fechaDia} 12:00:00-03:00`,
+      notas: (vals.notas || "").trim() || null,
+    });
     await sbFetchInversiones();
     renderInversiones();
   } catch (e) {
